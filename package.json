@@ -1,0 +1,118 @@
+{
+    "name": "vscode-to-wordpress-post-by-markdown",
+    "displayName": "VS Code to WordPress Post by Markdown",
+    "description": "Markdown to WordPress poster with Japanese support",
+    "version": "1.0.0",
+    "publisher": "your-publisher-name",
+    "engines": {
+      "vscode": "^1.60.0"
+    },
+    "categories": ["Other"],
+    "keywords": ["wordpress", "markdown", "blog", "post", "japanese"],
+    "main": "./out/extension.js",
+    "activationEvents": [
+      "onLanguage:markdown"
+    ],
+    "scripts": {
+      "compile": "tsc -p ./",
+      "watch": "tsc -watch -p ./",
+      "pretest": "npm run compile",
+      "test": "node ./out/test/runTest.js",
+      "vscode:prepublish": "npm run compile"
+    },
+    "devDependencies": {
+      "@types/vscode": "^1.60.0",
+      "@types/node": "^16.x",
+      "typescript": "^4.9.0"
+    },
+    "contributes": {
+      "commands": [
+        {
+          "command": "wordpress-post.postArticle",
+          "title": "WordPressに投稿",
+          "category": "WordPress",
+          "icon": "$(cloud-upload)"
+        },
+        {
+          "command": "wordpress-post.testConnection",
+          "title": "WordPress接続テスト",
+          "category": "WordPress",
+          "icon": "$(debug-disconnect)"
+        },
+        {
+          "command": "wordpress-post.uploadImages",
+          "title": "画像のみアップロード",
+          "category": "WordPress",
+          "icon": "$(file-media)"
+        }
+      ],
+      "menus": {
+        "editor/context": [
+          {
+            "command": "wordpress-post.postArticle",
+            "when": "resourceExtname == .md",
+            "group": "wordpress"
+          },
+          {
+            "command": "wordpress-post.uploadImages",
+            "when": "resourceExtname == .md",
+            "group": "wordpress"
+          }
+        ],
+        "explorer/context": [
+          {
+            "command": "wordpress-post.postArticle",
+            "when": "resourceExtname == .md",
+            "group": "wordpress"
+          }
+        ]
+      },
+      "configuration": {
+        "title": "WordPress Post",
+        "properties": {
+          "wordpress-post.apiUrl": {
+            "type": "string",
+            "description": "WordPress REST API URL (例: https://your-site.com)",
+            "order": 1
+          },
+          "wordpress-post.username": {
+            "type": "string",
+            "description": "WordPressユーザー名",
+            "order": 2
+          },
+          "wordpress-post.password": {
+            "type": "string",
+            "description": "WordPressアプリパスワード",
+            "order": 3
+          },
+          "wordpress-post.defaultStatus": {
+            "type": "string",
+            "enum": ["draft", "publish", "private"],
+            "default": "draft",
+            "description": "デフォルトの投稿ステータス",
+            "order": 4
+          },
+          "wordpress-post.autoUploadImages": {
+            "type": "boolean",
+            "default": true,
+            "description": "画像を自動でアップロードする",
+            "order": 5
+          },
+          "wordpress-post.autoSetFeaturedImage": {
+            "type": "boolean",
+            "default": true,
+            "description": "アイキャッチ画像を自動で設定する",
+            "order": 6
+          }
+        }
+      },
+      "keybindings": [
+        {
+          "command": "wordpress-post.postArticle",
+          "key": "ctrl+shift+w",
+          "mac": "cmd+shift+w",
+          "when": "resourceExtname == .md"
+        }
+      ]
+    }
+  }
