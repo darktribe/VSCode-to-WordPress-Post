@@ -66,15 +66,12 @@ class MarkdownParser {
      */
     convertToHtml(content) {
         let html = content;
-        // カスタムHTMLブロック（<!--! !-->）の処理
-        html = this.processCustomHtmlBlocks(html);
         // コードブロックを先に処理（他の記法と干渉しないよう）
         html = this.processCodeBlocks(html);
         // 見出し
         html = this.processHeadings(html);
-        // 太字・イタリック
+        // 太字（イタリックは無効化済み）
         html = this.processBold(html);
-        html = this.processItalic(html);
         // インラインコード
         html = this.processInlineCode(html);
         // リンク・画像
@@ -87,12 +84,6 @@ class MarkdownParser {
         // 段落
         html = this.processParagraphs(html);
         return html;
-    }
-    /**
-     * カスタムHTMLブロック処理（<!--! HTMLコード !-->）
-     */
-    processCustomHtmlBlocks(text) {
-        return text.replace(/<!--!\s*(.*?)\s*!-->/gs, '$1');
     }
     /**
      * コードブロック処理
@@ -120,15 +111,6 @@ class MarkdownParser {
         text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
         // __記法
         text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
-        return text;
-    }
-    /**
-     * イタリック処理
-     */
-    processItalic(text) {
-        // 全てのイタリック処理を無効化
-        // text = text.replace(/(^|[^\w*])\*([^*\n]+?)\*(?=[^\w*]|$)/g, '$1<em>$2</em>');
-        // text = text.replace(/(^|[^\w_:/]|(?<=\s))_([^_\n]+?)_(?=[^\w_]|$)/g, '$1<em>$2</em>');
         return text;
     }
     /**
@@ -311,26 +293,3 @@ class MarkdownParser {
     }
 }
 exports.MarkdownParser = MarkdownParser;
-// 使用例
-/*
-const parser = new MarkdownParser();
-const result = parser.parse(`---
-title: テスト記事
-categories: [tech, javascript]
----
-
-# 見出し1
-
-これは**太字**で、これは*イタリック*です。
-
-- リスト項目1
-- リスト項目2
-
-| 列1 | 列2 |
-|-----|-----|
-| A   | B   |
-`);
-
-console.log(result.html);
-console.log(result.metadata);
-*/ 

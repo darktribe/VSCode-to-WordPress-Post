@@ -48,6 +48,7 @@ export interface MarkdownParseResult {
     featured_media?: number;
     slug?: string;
     date?: string;
+    excerpt?: string; // 追加：抜粋フィールド
     meta?: Record<string, any>;
     lang?: string; // Polylang用
   }

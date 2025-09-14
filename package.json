@@ -3,7 +3,11 @@
     "displayName": "VS Code to WordPress Post by Markdown",
     "description": "Markdown to WordPress poster with Japanese support",
     "version": "1.0.0",
-    "publisher": "your-publisher-name",
+    "publisher": "showya-kisaragi",
+    "repository": {
+    "type": "git",
+    "url": "https://github.com/darktribe/VSCode-to-WordPress-Post.git"
+    },
     "engines": {
       "vscode": "^1.60.0"
     },

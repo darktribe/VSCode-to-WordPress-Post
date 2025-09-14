@@ -1,6 +1,6 @@
 /**
  * WordPress Post Extension - Phase 4
- * VS Code拡張機能のメインエントリーポイント
+ * VS Code拡張機能のメインエントリーポイント（meta_description送信表示付き）
  */
 
 import * as vscode from 'vscode';
@@ -94,6 +94,22 @@ async function postCurrentMarkdown() {
       const parser = new MarkdownParser();
       const parseResult = parser.parse(markdownContent);
       
+      // デバッグ：メタデータの内容を詳細確認
+      console.log('=== YAML解析デバッグ ===');
+      console.log('元のMarkdown冒頭50文字:', markdownContent.substring(0, 50));
+      console.log('解析されたメタデータ全体:', parseResult.metadata);
+      console.log('meta_descriptionキー存在チェック:', 'meta_description' in parseResult.metadata);
+      console.log('meta_descriptionの値:', parseResult.metadata.meta_description);
+      console.log('meta_descriptionの型:', typeof parseResult.metadata.meta_description);
+      console.log('========================');
+      
+      if (parseResult.metadata.meta_description) {
+        console.log('✅ meta_description検出:', parseResult.metadata.meta_description);
+      } else {
+        console.log('❌ meta_descriptionが検出されませんでした');
+        console.log('利用可能なキー:', Object.keys(parseResult.metadata));
+      }
+      
       progress.report({ increment: 20, message: '画像をアップロード中...' });
       
       // 画像処理
@@ -112,7 +128,15 @@ async function postCurrentMarkdown() {
         featuredImageId = featuredImageResult.mediaId;
       }
       
-      progress.report({ increment: 30, message: 'WordPressに投稿中...' });
+      // meta_description の確認と表示
+      if (finalParseResult.metadata.meta_description) {
+        progress.report({ 
+          increment: 25, 
+          message: `meta_descriptionを送信中...「${finalParseResult.metadata.meta_description.substring(0, 50)}${finalParseResult.metadata.meta_description.length > 50 ? '...' : ''}」` 
+        });
+      } else {
+        progress.report({ increment: 25, message: 'WordPressに投稿中...' });
+      }
       
       // WordPress連携
       const wordpressClient = new WordPressClient(config);
@@ -135,12 +159,26 @@ async function postCurrentMarkdown() {
         featuredImageId
       );
       
-      progress.report({ increment: 40, message: '完了' });
+      // meta_description送信結果を表示
+      if (finalParseResult.metadata.meta_description) {
+        if (result.success) {
+          progress.report({ increment: 15, message: `✅ meta_description送信成功！` });
+        } else {
+          progress.report({ increment: 15, message: `❌ meta_description送信失敗` });
+        }
+      }
+      
+      progress.report({ increment: 10, message: '完了' });
       
       // 結果を表示
       if (result.success) {
         const action = result.isUpdate ? '更新' : '作成';
-        const message = `記事の${action}が完了しました！`;
+        let message = `記事の${action}が完了しました！`;
+        
+        // meta_description の送信結果を表示
+        if (finalParseResult.metadata.meta_description) {
+          message += ` meta_description「${finalParseResult.metadata.meta_description.substring(0, 30)}${finalParseResult.metadata.meta_description.length > 30 ? '...' : ''}」も送信されました。`;
+        }
         
         if (result.url) {
           const openAction = '記事を開く';
@@ -153,7 +191,14 @@ async function postCurrentMarkdown() {
           vscode.window.showInformationMessage(message);
         }
       } else {
-        vscode.window.showErrorMessage(`投稿エラー: ${result.error}`);
+        let errorMessage = `投稿エラー: ${result.error}`;
+        
+        // meta_description関連のエラーかチェック
+        if (finalParseResult.metadata.meta_description && result.error?.includes('meta')) {
+          errorMessage += ` ※meta_description「${finalParseResult.metadata.meta_description.substring(0, 30)}${finalParseResult.metadata.meta_description.length > 30 ? '...' : ''}」の送信に失敗した可能性があります。`;
+        }
+        
+        vscode.window.showErrorMessage(errorMessage);
       }
     });
 
