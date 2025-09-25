@@ -1,9 +1,9 @@
 /**
- * WordPress Post Extension - Phase 3
- * WordPress REST API連携（FITテーマ対応版）
+ * WordPress REST API デバッグ版
+ * 問題の根本原因を特定するための詳細デバッグ機能付き
  */
 
-import { WordPressConfig, WordPressPost, WordPressTerm, PostResult, PostMetadata } from './types';
+import { WordPressConfig, WordPressPost, PostResult, PostMetadata } from './types';
 
 export class WordPressClient {
   private config: WordPressConfig;
@@ -13,7 +13,7 @@ export class WordPressClient {
   }
 
   /**
-   * 記事を投稿または更新
+   * 記事投稿（フルデバッグ版）
    */
   public async postArticle(
     title: string,
@@ -22,317 +22,485 @@ export class WordPressClient {
     featuredImageId?: number
   ): Promise<PostResult> {
     try {
-      // 既存記事を検索
-      const existingPost = await this.findExistingPost(title, metadata.slug);
-      
-      // カテゴリとタグのIDを取得
-      const categoryIds = await this.resolveCategoryIds(metadata.categories || []);
-      const tagIds = await this.resolveTagIds(metadata.tags || []);
+      console.log('🚀 WordPress REST API デバッグ開始');
+      console.log('='.repeat(60));
 
-      // 投稿データを構築
-      const postData: WordPressPost = {
-        title: title,
-        content: content,
-        status: metadata.status || 'draft',
-        categories: categoryIds,
-        tags: tagIds,
-        slug: metadata.slug,
-        date: metadata.date
-      };
+      // Step 1: 基本的な接続確認
+      await this.debugConnection();
 
-      // アイキャッチ画像を設定
-      if (featuredImageId) {
-        postData.featured_media = featuredImageId;
-      }
+      // Step 2: カテゴリの詳細分析
+      const categoryDebug = await this.debugCategories(metadata.categories || []);
 
-      // Polylang対応（言語設定）
-      if (metadata.language) {
-        postData.lang = metadata.language;
-      }
+      // Step 3: 最もシンプルな投稿テスト
+      const simpleResult = await this.testSimplePost();
 
-      // SEOメタデータ設定（FITテーマ対応）
-      if (metadata.meta_description) {
-        console.log('📝 Meta description detected:', metadata.meta_description);
-        
-        postData.meta = {
-          // FITテーマ用
-          'fit_seo_description-single': metadata.meta_description,
-          // 汎用フィールド（保険として）
-          'description': metadata.meta_description,
-          'meta_description': metadata.meta_description,
-          // Yoast SEO（他のサイトでも使えるように）
-          '_yoast_wpseo_metadesc': metadata.meta_description,
-          // RankMath SEO（代替）
-          'rank_math_description': metadata.meta_description
-        };
-        
-        // excerpt フィールドも設定（フォールバック）
-        postData.excerpt = metadata.meta_description;
-        
-        console.log('📤 Sending meta fields:', postData.meta);
-        console.log('📤 Sending excerpt:', postData.excerpt);
-      }
+      // Step 4: カテゴリ付き投稿テスト
+      const categoryResult = await this.testCategoryPost(categoryDebug.validIds);
 
-      console.log('📤 Full post data being sent:', JSON.stringify(postData, null, 2));
-
-      let result: PostResult;
-
-      if (existingPost) {
-        // 既存記事を更新
-        postData.id = existingPost.id;
-        result = await this.updatePost(postData);
-        result.isUpdate = true;
-      } else {
-        // 新規記事を作成
-        result = await this.createPost(postData);
-        result.isUpdate = false;
-      }
+      // Step 5: 実際の投稿実行
+      const result = await this.executeActualPost(title, content, metadata, featuredImageId, categoryDebug.validIds);
 
       return result;
 
     } catch (error) {
       return {
         success: false,
-        error: `記事投稿エラー: ${error instanceof Error ? error.message : String(error)}`
+        error: `デバッグ実行エラー: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }
 
   /**
-   * 新規記事作成（レスポンス詳細ログ付き）
+   * 基本接続デバッグ
    */
-  private async createPost(postData: WordPressPost): Promise<PostResult> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
-    
-    console.log('📡 Sending POST request to:', url);
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.getAuthHeader(),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(postData)
-    });
+  private async debugConnection(): Promise<void> {
+    console.log('\n📡 基本接続デバッグ');
+    console.log('-'.repeat(30));
 
-    console.log('📥 Response status:', response.status);
-    console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Error response:', errorText);
-      return {
-        success: false,
-        error: `記事作成エラー: ${response.status} ${response.statusText} - ${errorText}`
-      };
-    }
-
-    const result = await response.json();
-    console.log('✅ Success response:', JSON.stringify(result, null, 2));
-    
-    // metaフィールドがレスポンスに含まれているかチェック
-    if (result.meta) {
-      console.log('📋 Meta fields in response:', result.meta);
-      if (result.meta['fit_seo_description-single']) {
-        console.log('✅ FIT theme meta_description successfully set:', result.meta['fit_seo_description-single']);
-      } else {
-        console.log('⚠️ FIT theme meta_description not found in response');
-      }
-    } else {
-      console.log('⚠️ No meta fields in response');
-    }
-
-    return {
-      success: true,
-      postId: result.id,
-      url: result.link
-    };
-  }
-
-  /**
-   * 既存記事更新（レスポンス詳細ログ付き）
-   */
-  private async updatePost(postData: WordPressPost): Promise<PostResult> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/posts/${postData.id}`;
-    
-    console.log('📡 Sending POST request (update) to:', url);
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.getAuthHeader(),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(postData)
-    });
-
-    console.log('📥 Response status:', response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Error response:', errorText);
-      return {
-        success: false,
-        error: `記事更新エラー: ${response.status} ${response.statusText} - ${errorText}`
-      };
-    }
-
-    const result = await response.json();
-    console.log('✅ Success response:', JSON.stringify(result, null, 2));
-    
-    // metaフィールドがレスポンスに含まれているかチェック
-    if (result.meta) {
-      console.log('📋 Meta fields in response:', result.meta);
-      if (result.meta['fit_seo_description-single']) {
-        console.log('✅ FIT theme meta_description successfully set:', result.meta['fit_seo_description-single']);
-      } else {
-        console.log('⚠️ FIT theme meta_description not found in response');
-      }
-    } else {
-      console.log('⚠️ No meta fields in response');
-    }
-
-    return {
-      success: true,
-      postId: result.id,
-      url: result.link
-    };
-  }
-
-  // 既存のメソッドはそのまま
-  private async findExistingPost(title: string, slug?: string): Promise<WordPressPost | null> {
     try {
-      if (slug) {
-        const slugResult = await this.searchPostBySlug(slug);
-        if (slugResult) return slugResult;
+      // 認証テスト
+      const authUrl = `${this.config.apiUrl}/wp-json/wp/v2/users/me`;
+      console.log(`🔍 認証テスト: ${authUrl}`);
+
+      const authResponse = await fetch(authUrl, {
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+
+      console.log(`📥 認証レスポンス: ${authResponse.status} ${authResponse.statusText}`);
+
+      if (authResponse.ok) {
+        const userInfo = await authResponse.json();
+        console.log(`✅ 認証成功 - ユーザー: ${userInfo.name} (ID: ${userInfo.id})`);
+        console.log(`📋 権限: ${userInfo.capabilities ? Object.keys(userInfo.capabilities).slice(0, 5).join(', ') + '...' : '不明'}`);
+      } else {
+        const errorText = await authResponse.text();
+        console.log(`❌ 認証失敗: ${errorText}`);
       }
-      const titleResult = await this.searchPostByTitle(title);
-      return titleResult;
+
+      // 基本API確認
+      const basicUrl = `${this.config.apiUrl}/wp-json/wp/v2/posts?per_page=1`;
+      console.log(`🔍 基本API確認: ${basicUrl}`);
+
+      const basicResponse = await fetch(basicUrl);
+      console.log(`📥 基本APIレスポンス: ${basicResponse.status} ${basicResponse.statusText}`);
+
+      if (basicResponse.ok) {
+        console.log('✅ 基本API接続正常');
+      } else {
+        console.log('❌ 基本API接続失敗');
+      }
+
     } catch (error) {
-      console.error('既存記事検索エラー:', error);
+      console.error('❌ 接続デバッグエラー:', error);
+    }
+  }
+
+  /**
+   * カテゴリ詳細デバッグ
+   */
+  private async debugCategories(requestedCategories: string[]): Promise<CategoryDebugResult> {
+    console.log('\n📂 カテゴリ詳細デバッグ');
+    console.log('-'.repeat(30));
+
+    const result: CategoryDebugResult = {
+      validIds: [],
+      issues: []
+    };
+
+    try {
+      // 全カテゴリ取得
+      const categoriesUrl = `${this.config.apiUrl}/wp-json/wp/v2/categories?per_page=100`;
+      console.log(`🔍 カテゴリ取得: ${categoriesUrl}`);
+
+      const categoriesResponse = await fetch(categoriesUrl, {
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+
+      console.log(`📥 カテゴリレスポンス: ${categoriesResponse.status} ${categoriesResponse.statusText}`);
+
+      if (!categoriesResponse.ok) {
+        const errorText = await categoriesResponse.text();
+        console.log(`❌ カテゴリ取得失敗: ${errorText}`);
+        result.issues.push(`カテゴリ取得失敗: ${errorText}`);
+        return result;
+      }
+
+      const allCategories = await categoriesResponse.json();
+      console.log(`📋 利用可能カテゴリ数: ${allCategories.length}`);
+
+      // 全カテゴリを詳細表示
+      console.log('\n📋 全カテゴリ一覧:');
+      allCategories.forEach((cat: any, index: number) => {
+        console.log(`  ${index + 1}. "${cat.name}" (ID: ${cat.id}, スラッグ: ${cat.slug}, 投稿数: ${cat.count})`);
+      });
+
+      // 要求されたカテゴリの解析
+      console.log('\n🔍 要求カテゴリの解析:');
+      for (const categoryName of requestedCategories) {
+        console.log(`\n処理中: "${categoryName}"`);
+
+        const exactMatch = allCategories.find((cat: any) => cat.name === categoryName);
+        if (exactMatch) {
+          result.validIds.push(exactMatch.id);
+          console.log(`  ✅ 完全一致: ID ${exactMatch.id}`);
+        } else {
+          console.log(`  ❌ 完全一致なし`);
+
+          // 部分一致検索
+          const partialMatches = allCategories.filter((cat: any) => 
+            cat.name.toLowerCase().includes(categoryName.toLowerCase()) ||
+            categoryName.toLowerCase().includes(cat.name.toLowerCase())
+          );
+
+          if (partialMatches.length > 0) {
+            console.log(`  🔍 部分一致候補:`);
+            partialMatches.forEach((cat: any) => {
+              console.log(`    - "${cat.name}" (ID: ${cat.id})`);
+            });
+          }
+
+          // 新規作成テスト
+          console.log(`  🆕 新規作成テスト...`);
+          const newId = await this.testCreateCategory(categoryName);
+          if (newId) {
+            result.validIds.push(newId);
+            console.log(`  ✅ 新規作成成功: ID ${newId}`);
+          } else {
+            console.log(`  ❌ 新規作成失敗`);
+            result.issues.push(`カテゴリ "${categoryName}" の作成失敗`);
+          }
+        }
+      }
+
+      console.log(`\n📂 最終的に使用するカテゴリID: [${result.validIds.join(', ')}]`);
+
+    } catch (error) {
+      console.error('❌ カテゴリデバッグエラー:', error);
+      result.issues.push(`カテゴリデバッグエラー: ${error}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * カテゴリ作成テスト
+   */
+  private async testCreateCategory(categoryName: string): Promise<number | null> {
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/categories`;
+      
+      const categoryData = {
+        name: categoryName,
+        slug: categoryName.toLowerCase().replace(/\s+/g, '-').replace(/[^\w\-\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/g, '')
+      };
+
+      console.log(`    📤 作成データ:`, categoryData);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': this.getAuthHeader(),
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: JSON.stringify(categoryData)
+      });
+
+      console.log(`    📥 作成レスポンス: ${response.status} ${response.statusText}`);
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`    ✅ 作成成功:`, result);
+        return result.id;
+      } else {
+        const errorText = await response.text();
+        console.log(`    ❌ 作成失敗: ${errorText}`);
+        return null;
+      }
+    } catch (error) {
+      console.log(`    ❌ 作成エラー:`, error);
       return null;
     }
   }
 
-  private async searchPostBySlug(slug: string): Promise<WordPressPost | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': this.getAuthHeader() }
-    });
-    if (response.ok) {
-      const posts = await response.json();
-      return posts.length > 0 ? posts[0] : null;
-    }
-    return null;
-  }
+  /**
+   * シンプル投稿テスト（カテゴリなし）
+   */
+  private async testSimplePost(): Promise<void> {
+    console.log('\n📝 シンプル投稿テスト（カテゴリなし）');
+    console.log('-'.repeat(30));
 
-  private async searchPostByTitle(title: string): Promise<WordPressPost | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/posts?search=${encodeURIComponent(title)}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': this.getAuthHeader() }
-    });
-    if (response.ok) {
-      const posts = await response.json();
-      const exactMatch = posts.find((post: any) => 
-        post.title.rendered === title || post.title.raw === title
-      );
-      return exactMatch || null;
-    }
-    return null;
-  }
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
+      
+      const simplePostData = {
+        title: 'テスト投稿 - ' + new Date().getTime(),
+        content: 'これはカテゴリなしのテスト投稿です。',
+        status: 'draft'
+      };
 
-  private async resolveCategoryIds(categoryNames: string[]): Promise<number[]> {
-    const categoryIds: number[] = [];
-    for (const categoryName of categoryNames) {
-      try {
-        let category = await this.findCategoryByName(categoryName);
-        if (!category) {
-          category = await this.createCategory(categoryName);
-        }
-        if (category) {
-          categoryIds.push(category.id);
-        }
-      } catch (error) {
-        console.error(`カテゴリ処理エラー: ${categoryName}`, error);
+      console.log(`📤 送信データ:`, simplePostData);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': this.getAuthHeader(),
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: JSON.stringify(simplePostData)
+      });
+
+      console.log(`📥 レスポンス: ${response.status} ${response.statusText}`);
+      console.log(`📋 レスポンスヘッダー:`);
+      response.headers.forEach((value, key) => {
+        console.log(`  ${key}: ${value}`);
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ シンプル投稿成功:`);
+        console.log(`  ID: ${result.id}`);
+        console.log(`  カテゴリ: [${result.categories?.join(', ') || 'なし'}]`);
+        console.log(`  URL: ${result.link}`);
+
+        // 作成した投稿を削除
+        await this.cleanupTestPost(result.id);
+      } else {
+        const errorText = await response.text();
+        console.log(`❌ シンプル投稿失敗: ${errorText}`);
       }
+
+    } catch (error) {
+      console.error('❌ シンプル投稿テストエラー:', error);
     }
-    return categoryIds;
   }
 
-  private async resolveTagIds(tagNames: string[]): Promise<number[]> {
-    const tagIds: number[] = [];
-    for (const tagName of tagNames) {
-      try {
-        let tag = await this.findTagByName(tagName);
-        if (!tag) {
-          tag = await this.createTag(tagName);
+  /**
+   * カテゴリ付き投稿テスト
+   */
+  private async testCategoryPost(categoryIds: number[]): Promise<void> {
+    console.log('\n📝 カテゴリ付き投稿テスト');
+    console.log('-'.repeat(30));
+
+    if (categoryIds.length === 0) {
+      console.log('⚠️ テスト用カテゴリIDがありません');
+      return;
+    }
+
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
+      
+      const categoryPostData = {
+        title: 'カテゴリテスト投稿 - ' + new Date().getTime(),
+        content: `これはカテゴリ付きのテスト投稿です。カテゴリID: [${categoryIds.join(', ')}]`,
+        status: 'draft',
+        categories: categoryIds
+      };
+
+      console.log(`📤 送信データ:`, categoryPostData);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': this.getAuthHeader(),
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: JSON.stringify(categoryPostData)
+      });
+
+      console.log(`📥 レスポンス: ${response.status} ${response.statusText}`);
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ カテゴリ付き投稿成功:`);
+        console.log(`  ID: ${result.id}`);
+        console.log(`  設定したカテゴリID: [${categoryIds.join(', ')}]`);
+        console.log(`  実際のカテゴリID: [${result.categories?.join(', ') || 'なし'}]`);
+        console.log(`  URL: ${result.link}`);
+
+        // カテゴリが正しく設定されたかチェック
+        const categoriesMatch = categoryIds.every(id => result.categories?.includes(id));
+        if (categoriesMatch) {
+          console.log(`🎉 カテゴリ設定成功！`);
+        } else {
+          console.log(`⚠️ カテゴリ設定に問題があります`);
         }
-        if (tag) {
-          tagIds.push(tag.id);
-        }
-      } catch (error) {
-        console.error(`タグ処理エラー: ${tagName}`, error);
+
+        // 作成した投稿を削除
+        await this.cleanupTestPost(result.id);
+      } else {
+        const errorText = await response.text();
+        console.log(`❌ カテゴリ付き投稿失敗: ${errorText}`);
       }
+
+    } catch (error) {
+      console.error('❌ カテゴリ付き投稿テストエラー:', error);
     }
-    return tagIds;
   }
 
-  private async findCategoryByName(name: string): Promise<WordPressTerm | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/categories?search=${encodeURIComponent(name)}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': this.getAuthHeader() }
-    });
-    if (response.ok) {
-      const categories = await response.json();
-      const exactMatch = categories.find((cat: any) => cat.name === name);
-      return exactMatch || null;
+  /**
+   * 実際の投稿実行
+   */
+  private async executeActualPost(
+    title: string,
+    content: string,
+    metadata: PostMetadata,
+    featuredImageId?: number,
+    categoryIds: number[] = []
+  ): Promise<PostResult> {
+    console.log('\n📝 実際の投稿実行');
+    console.log('-'.repeat(30));
+
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
+      
+      const postData: any = {
+        title: title,
+        content: content,
+        status: metadata.status || 'draft'
+      };
+
+      if (metadata.slug) postData.slug = metadata.slug;
+      if (metadata.date) postData.date = metadata.date;
+      if (featuredImageId) postData.featured_media = featuredImageId;
+
+      if (categoryIds.length > 0) {
+        postData.categories = categoryIds;
+        console.log(`📂 設定カテゴリID: [${categoryIds.join(', ')}]`);
+      }
+
+      if (metadata.meta_description) {
+        postData.meta = {
+          'fit_seo_description-single': metadata.meta_description,
+          'description': metadata.meta_description,
+          'meta_description': metadata.meta_description,
+          '_yoast_wpseo_metadesc': metadata.meta_description,
+          'rank_math_description': metadata.meta_description
+        };
+        postData.excerpt = metadata.meta_description;
+      }
+
+      console.log(`📤 最終投稿データ:`, JSON.stringify(postData, null, 2));
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': this.getAuthHeader(),
+          'Content-Type': 'application/json; charset=utf-8'
+        },
+        body: JSON.stringify(postData)
+      });
+
+      console.log(`📥 投稿レスポンス: ${response.status} ${response.statusText}`);
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ 投稿成功:`);
+        console.log(`  ID: ${result.id}`);
+        console.log(`  タイトル: ${result.title.rendered}`);
+        console.log(`  設定予定カテゴリ: [${categoryIds.join(', ')}]`);
+        console.log(`  実際のカテゴリ: [${result.categories?.join(', ') || 'なし'}]`);
+        console.log(`  URL: ${result.link}`);
+
+        // 詳細確認
+        await this.detailedPostVerification(result.id);
+
+        return {
+          success: true,
+          postId: result.id,
+          url: result.link
+        };
+      } else {
+        const errorText = await response.text();
+        console.log(`❌ 投稿失敗: ${errorText}`);
+        return {
+          success: false,
+          error: `投稿失敗: ${response.status} ${response.statusText} - ${errorText}`
+        };
+      }
+
+    } catch (error) {
+      console.error('❌ 投稿実行エラー:', error);
+      return {
+        success: false,
+        error: `投稿実行エラー: ${error instanceof Error ? error.message : String(error)}`
+      };
     }
-    return null;
   }
 
-  private async findTagByName(name: string): Promise<WordPressTerm | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/tags?search=${encodeURIComponent(name)}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': this.getAuthHeader() }
-    });
-    if (response.ok) {
-      const tags = await response.json();
-      const exactMatch = tags.find((tag: any) => tag.name === name);
-      return exactMatch || null;
+  /**
+   * 詳細投稿確認
+   */
+  private async detailedPostVerification(postId: number): Promise<void> {
+    console.log('\n🔍 詳細投稿確認');
+    console.log('-'.repeat(30));
+
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts/${postId}`;
+      const response = await fetch(url, {
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+
+      if (response.ok) {
+        const post = await response.json();
+        
+        console.log(`📊 投稿詳細:`);
+        console.log(`  ID: ${post.id}`);
+        console.log(`  タイトル: ${post.title.rendered}`);
+        console.log(`  ステータス: ${post.status}`);
+        console.log(`  カテゴリID: [${post.categories?.join(', ') || 'なし'}]`);
+        console.log(`  タグID: [${post.tags?.join(', ') || 'なし'}]`);
+        console.log(`  作成日時: ${post.date}`);
+        console.log(`  更新日時: ${post.modified}`);
+
+        if (post.categories && post.categories.length > 0) {
+          console.log(`\n📂 カテゴリ詳細:`);
+          for (const categoryId of post.categories) {
+            const categoryInfo = await this.getCategoryInfo(categoryId);
+            if (categoryInfo) {
+              console.log(`  - "${categoryInfo.name}" (ID: ${categoryId}, スラッグ: ${categoryInfo.slug})`);
+            }
+          }
+        } else {
+          console.log(`\n⚠️ カテゴリが設定されていません`);
+          console.log(`\n🔧 考えられる原因:`);
+          console.log(`  1. カテゴリIDが正しくない`);
+          console.log(`  2. ユーザー権限の問題`);
+          console.log(`  3. プラグインの干渉`);
+          console.log(`  4. WordPressの設定問題`);
+        }
+
+      }
+    } catch (error) {
+      console.error('❌ 詳細確認エラー:', error);
     }
-    return null;
   }
 
-  private async createCategory(name: string): Promise<WordPressTerm | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/categories`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.getAuthHeader(),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ name })
-    });
-    if (response.ok) {
-      return await response.json();
+  /**
+   * テスト投稿削除
+   */
+  private async cleanupTestPost(postId: number): Promise<void> {
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts/${postId}?force=true`;
+      await fetch(url, {
+        method: 'DELETE',
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+      console.log(`🗑️ テスト投稿削除: ID ${postId}`);
+    } catch (error) {
+      console.log(`⚠️ テスト投稿削除失敗: ID ${postId}`);
     }
-    return null;
   }
 
-  private async createTag(name: string): Promise<WordPressTerm | null> {
-    const url = `${this.config.apiUrl}/wp-json/wp/v2/tags`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.getAuthHeader(),
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ name })
-    });
-    if (response.ok) {
-      return await response.json();
+  private async getCategoryInfo(categoryId: number): Promise<any | null> {
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/categories/${categoryId}`;
+      const response = await fetch(url, {
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+      return response.ok ? await response.json() : null;
+    } catch (error) {
+      return null;
     }
-    return null;
   }
 
   public async testConnection(): Promise<{ success: boolean; error?: string }> {
@@ -362,4 +530,10 @@ export class WordPressClient {
     const credentials = Buffer.from(`${this.config.username}:${this.config.password}`).toString('base64');
     return `Basic ${credentials}`;
   }
+}
+
+// デバッグ用型定義
+interface CategoryDebugResult {
+  validIds: number[];
+  issues: string[];
 }

@@ -286,7 +286,7 @@ export class MarkdownParser {
   }
 
   /**
-   * 段落処理
+   * 段落処理（行頭スペース保持・改行コード対応版）
    */
   private processParagraphs(text: string): string {
     const lines = text.split('\n');
@@ -298,21 +298,31 @@ export class MarkdownParser {
 
       // 空行または既にHTMLタグの行
       if (trimmed === '' || this.isHtmlTag(trimmed)) {
+        // 現在の段落を処理
         if (currentParagraph.length > 0) {
-          result.push(`<p>${currentParagraph.join(' ')}</p>`);
+          const content = currentParagraph
+            .map(line => this.preserveLeadingSpaces(line))
+            .join('<br />');
+          result.push(`<p>${content}</p>`);
           currentParagraph = [];
         }
+        
+        // HTMLタグまたは空行を追加
         if (trimmed !== '') {
           result.push(line);
         }
       } else {
-        currentParagraph.push(trimmed);
+        // 通常テキスト行を段落に追加（trimしない）
+        currentParagraph.push(line);
       }
     }
 
-    // 最後の段落
+    // 最後の段落処理
     if (currentParagraph.length > 0) {
-      result.push(`<p>${currentParagraph.join(' ')}</p>`);
+      const content = currentParagraph
+        .map(line => this.preserveLeadingSpaces(line))
+        .join('<br />');
+      result.push(`<p>${content}</p>`);
     }
 
     return result.join('\n');
@@ -325,15 +335,27 @@ export class MarkdownParser {
     return /^<\/?[a-zA-Z][^>]*>/.test(line.trim());
   }
 
-  /**
+/**
    * HTMLエスケープ
    */
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;');
-  }
+private escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+/**
+ * 行頭スペースをHTMLエンティティに変換
+ */
+private preserveLeadingSpaces(line: string): string {
+  // 行頭の全角スペースと半角スペースを&nbsp;に変換
+  return line.replace(/^([\u3000\s]+)/, (match) => {
+    return match
+      .replace(/\u3000/g, '&nbsp;&nbsp;') // 全角スペース → &nbsp;&nbsp;
+      .replace(/ /g, '&nbsp;');           // 半角スペース → &nbsp;
+  });
+}
 }
