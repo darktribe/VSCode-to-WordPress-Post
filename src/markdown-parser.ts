@@ -162,69 +162,135 @@ export class MarkdownParser {
     return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   }
 
-  /**
-   * リスト処理
-   */
-  private processLists(text: string): string {
-    const lines = text.split('\n');
-    const result: string[] = [];
-    let inUnorderedList = false;
-    let inOrderedList = false;
+ /**
+ * ネストしたリスト処理（改良版）
+ * インデント（スペース2個または4個、タブ）でネストレベルを判定
+ */
+private processLists(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  const listStack: Array<{type: 'ul' | 'ol', level: number}> = [];
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
 
-      // 無序リスト（- item）
-      if (trimmed.match(/^-\s+(.+)$/)) {
-        const content = trimmed.replace(/^-\s+/, '');
-        if (!inUnorderedList) {
-          result.push('<ul>');
-          inUnorderedList = true;
-        }
-        if (inOrderedList) {
-          result.push('</ol>');
-          inOrderedList = false;
-        }
-        result.push(`<li>${content}</li>`);
-      }
-      // 有序リスト（1. item）
-      else if (trimmed.match(/^\d+\.\s+(.+)$/)) {
-        const content = trimmed.replace(/^\d+\.\s+/, '');
-        if (!inOrderedList) {
-          result.push('<ol>');
-          inOrderedList = true;
-        }
-        if (inUnorderedList) {
-          result.push('</ul>');
-          inUnorderedList = false;
-        }
-        result.push(`<li>${content}</li>`);
-      }
-      // リスト以外
-      else {
-        if (inUnorderedList) {
-          result.push('</ul>');
-          inUnorderedList = false;
-        }
-        if (inOrderedList) {
-          result.push('</ol>');
-          inOrderedList = false;
-        }
-        result.push(line);
-      }
+    // インデントレベルを計算（スペース2個=1レベル、タブ=1レベル）
+    const indentMatch = line.match(/^(\s*)/);
+    const indentText = indentMatch ? indentMatch[1] : '';
+    const indentLevel = this.calculateIndentLevel(indentText);
+
+    // 無序リスト（- item）
+    const unorderedMatch = trimmed.match(/^-\s+(.+)$/);
+    if (unorderedMatch) {
+      const content = unorderedMatch[1];
+      this.adjustListStack(result, listStack, 'ul', indentLevel);
+      result.push(`<li>${content}</li>`);
     }
-
-    // 最後のリストタグを閉じる
-    if (inUnorderedList) {
-      result.push('</ul>');
+    // 有序リスト（1. item）
+    else if (trimmed.match(/^\d+\.\s+(.+)$/)) {
+      const content = trimmed.replace(/^\d+\.\s+/, '');
+      this.adjustListStack(result, listStack, 'ol', indentLevel);
+      result.push(`<li>${content}</li>`);
     }
-    if (inOrderedList) {
-      result.push('</ol>');
+    // リスト以外
+    else {
+      // 全てのリストを閉じる
+      this.closeAllLists(result, listStack);
+      result.push(line);
     }
-
-    return result.join('\n');
   }
+
+  // 最後に残ったリストタグを全て閉じる
+  this.closeAllLists(result, listStack);
+
+  return result.join('\n');
+}
+
+/**
+ * インデントレベルを計算
+ * スペース2個または4個、タブで1レベルとカウント
+ */
+private calculateIndentLevel(indentText: string): number {
+  let level = 0;
+  let i = 0;
+  
+  while (i < indentText.length) {
+    if (indentText[i] === '\t') {
+      level++;
+      i++;
+    } else if (indentText[i] === ' ') {
+      // スペースの場合、2個または4個で1レベル
+      if (i + 1 < indentText.length && indentText[i + 1] === ' ') {
+        if (i + 3 < indentText.length && 
+            indentText[i + 2] === ' ' && 
+            indentText[i + 3] === ' ') {
+          // 4スペース
+          level++;
+          i += 4;
+        } else {
+          // 2スペース
+          level++;
+          i += 2;
+        }
+      } else {
+        // 1スペースは0.5レベル（切り捨て）
+        i++;
+      }
+    } else {
+      break;
+    }
+  }
+  
+  return level;
+}
+
+/**
+ * リストスタックを調整（ネスト処理の核心部分）
+ */
+private adjustListStack(
+  result: string[], 
+  listStack: Array<{type: 'ul' | 'ol', level: number}>,
+  currentType: 'ul' | 'ol',
+  currentLevel: number
+): void {
+  // 現在のレベルより深いスタックを削除
+  while (listStack.length > 0 && listStack[listStack.length - 1].level > currentLevel) {
+    const closing = listStack.pop()!;
+    result.push(`</${closing.type}>`);
+  }
+
+  // 同じレベルで異なるタイプの場合、閉じて新しく開始
+  if (listStack.length > 0 && 
+      listStack[listStack.length - 1].level === currentLevel &&
+      listStack[listStack.length - 1].type !== currentType) {
+    const closing = listStack.pop()!;
+    result.push(`</${closing.type}>`);
+  }
+
+  // 新しいレベルまたはタイプのリストを開始
+  if (listStack.length === 0 || 
+      listStack[listStack.length - 1].level < currentLevel ||
+      (listStack[listStack.length - 1].level === currentLevel && 
+       listStack[listStack.length - 1].type !== currentType)) {
+    
+    result.push(`<${currentType}>`);
+    listStack.push({type: currentType, level: currentLevel});
+  }
+}
+
+/**
+ * 全てのリストタグを閉じる
+ */
+private closeAllLists(
+  result: string[], 
+  listStack: Array<{type: 'ul' | 'ol', level: number}>
+): void {
+  while (listStack.length > 0) {
+    const closing = listStack.pop()!;
+    result.push(`</${closing.type}>`);
+  }
+}
 
   /**
    * テーブル処理

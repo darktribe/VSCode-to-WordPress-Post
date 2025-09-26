@@ -1,6 +1,6 @@
 /**
  * WordPress REST API 修正版
- * カテゴリ名を事前にIDに変換してから送信
+ * Slug重複時の上書き機能付き
  */
 
 import { WordPressConfig, PostResult, PostMetadata } from './types';
@@ -13,7 +13,7 @@ export class WordPressClient {
   }
 
   /**
-   * 記事投稿（カテゴリ名→ID変換対応版）
+   * 記事投稿（Slug重複時上書き対応版）
    */
   public async postArticle(
     title: string,
@@ -22,8 +22,86 @@ export class WordPressClient {
     featuredImageId?: number
   ): Promise<PostResult> {
     try {
-      console.log('🚀 WordPress REST API カテゴリ変換版 開始');
+      console.log('🚀 WordPress REST API Slug重複対応版 開始');
       
+      // slugが指定されている場合、既存記事をチェック
+      let existingPostId: number | null = null;
+      if (metadata.slug) {
+        console.log('🔍 既存記事チェック - slug:', metadata.slug);
+        existingPostId = await this.findPostBySlug(metadata.slug);
+        
+        if (existingPostId) {
+          console.log('📝 既存記事発見 - 更新処理に切り替え ID:', existingPostId);
+          return await this.updateExistingPost(
+            existingPostId, 
+            title, 
+            content, 
+            metadata, 
+            featuredImageId
+          );
+        } else {
+          console.log('✨ 新規記事として作成');
+        }
+      }
+      
+      // 新規投稿処理（既存コード）
+      return await this.createNewPost(title, content, metadata, featuredImageId);
+
+    } catch (error) {
+      console.error('❌ 投稿エラー:', error);
+      return {
+        success: false,
+        error: `投稿エラー: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+
+  /**
+   * Slugで既存記事を検索
+   */
+  private async findPostBySlug(slug: string): Promise<number | null> {
+    try {
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&per_page=1`;
+      
+      const response = await fetch(url, {
+        headers: { 'Authorization': this.getAuthHeader() }
+      });
+
+      if (response.ok) {
+        const posts = await response.json();
+        if (posts.length > 0) {
+          console.log('🔍 既存記事詳細:', {
+            id: posts[0].id,
+            title: posts[0].title.rendered,
+            slug: posts[0].slug,
+            status: posts[0].status
+          });
+          return posts[0].id;
+        }
+      } else {
+        console.warn('⚠️ 記事検索でエラー:', response.status, response.statusText);
+      }
+
+      return null;
+    } catch (error) {
+      console.error('❌ 記事検索エラー:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 既存記事を更新
+   */
+  private async updateExistingPost(
+    postId: number,
+    title: string,
+    content: string,
+    metadata: PostMetadata,
+    featuredImageId?: number
+  ): Promise<PostResult> {
+    try {
+      console.log('📝 既存記事更新開始 - ID:', postId);
+
       // カテゴリ名をIDに変換
       let categoryIds: number[] = [];
       const categoryNames = this.extractCategoryNames(metadata);
@@ -34,102 +112,199 @@ export class WordPressClient {
         console.log('🔢 変換後カテゴリID:', categoryIds);
       }
 
-      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
+      const url = `${this.config.apiUrl}/wp-json/wp/v2/posts/${postId}`;
       
-      const postData: any = {
+      const updateData: any = {
         title: title,
         content: content,
         status: metadata.status || 'draft'
       };
 
       // オプション項目の追加
-      if (metadata.slug) postData.slug = metadata.slug;
-      if (metadata.date) postData.date = metadata.date;
-      if (featuredImageId) postData.featured_media = featuredImageId;
+      if (metadata.slug) updateData.slug = metadata.slug;
+      if (metadata.date) updateData.date = metadata.date;
+      if (featuredImageId) updateData.featured_media = featuredImageId;
 
-      // カテゴリIDを設定（整数の配列として）
+      // カテゴリIDを設定
       if (categoryIds.length > 0) {
-        postData.categories = categoryIds;
-        console.log('📂 送信カテゴリID:', categoryIds);
+        updateData.categories = categoryIds;
+        console.log('📂 更新カテゴリID:', categoryIds);
       }
 
       // SEOメタデータ設定
       if (metadata.meta_description) {
-        postData.excerpt = metadata.meta_description;
-        postData.meta = {
+        updateData.excerpt = metadata.meta_description;
+        updateData.meta = {
           'meta_description': metadata.meta_description,
           '_yoast_wpseo_metadesc': metadata.meta_description,
           'rank_math_description': metadata.meta_description
         };
-        console.log('📝 meta_description設定:', metadata.meta_description.substring(0, 50) + '...');
+        console.log('📝 meta_description更新:', metadata.meta_description.substring(0, 50) + '...');
       }
 
-      // Polylang対応（言語設定）
+      // Polylang対応
       if (metadata.language) {
-        postData.lang = metadata.language;
-        if (!postData.meta) postData.meta = {};
-        postData.meta.language = metadata.language;
-        console.log('🌐 言語設定:', metadata.language);
+        updateData.lang = metadata.language;
+        if (!updateData.meta) updateData.meta = {};
+        updateData.meta.language = metadata.language;
+        console.log('🌐 言語設定更新:', metadata.language);
       }
 
-      console.log('📤 最終送信データ:', JSON.stringify(postData, null, 2));
+      console.log('📤 更新データ送信:', JSON.stringify(updateData, null, 2));
 
       const response = await fetch(url, {
-        method: 'POST',
+        method: 'POST', // WordPressのREST APIは更新もPOSTを使用
         headers: {
           'Authorization': this.getAuthHeader(),
           'Content-Type': 'application/json; charset=utf-8'
         },
-        body: JSON.stringify(postData)
+        body: JSON.stringify(updateData)
       });
 
-      console.log('📥 レスポンス:', response.status, response.statusText);
+      console.log('📥 更新レスポンス:', response.status, response.statusText);
 
       if (response.ok) {
         const result = await response.json();
-        console.log('✅ 投稿成功:', {
+        console.log('✅ 記事更新成功:', {
           id: result.id,
           title: result.title.rendered,
           categories: result.categories,
           url: result.link
         });
 
-        // 投稿後確認
-        await this.verifyPost(result.id, categoryNames, categoryIds);
-
         return {
           success: true,
           postId: result.id,
-          url: result.link
+          url: result.link,
+          isUpdate: true
         };
       } else {
         const errorText = await response.text();
-        console.error('❌ 投稿失敗:', errorText);
-        
-        // エラー詳細を解析
-        try {
-          const errorJson = JSON.parse(errorText);
-          if (errorJson.code === 'rest_invalid_param' && errorJson.message.includes('categories')) {
-            return {
-              success: false,
-              error: `カテゴリ設定エラー: WordPressが整数のカテゴリIDを期待していますが、文字列が送信された可能性があります。変換処理を確認してください。`
-            };
-          }
-        } catch (parseError) {
-          // JSON解析失敗は無視
-        }
+        console.error('❌ 更新失敗:', errorText);
         
         return {
           success: false,
-          error: `投稿失敗: ${response.status} ${response.statusText} - ${errorText}`
+          error: `記事更新失敗: ${response.status} ${response.statusText} - ${errorText}`
         };
       }
 
     } catch (error) {
-      console.error('❌ 投稿エラー:', error);
+      console.error('❌ 更新エラー:', error);
       return {
         success: false,
-        error: `投稿エラー: ${error instanceof Error ? error.message : String(error)}`
+        error: `更新エラー: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+
+  /**
+   * 新規記事作成
+   */
+  private async createNewPost(
+    title: string,
+    content: string,
+    metadata: PostMetadata,
+    featuredImageId?: number
+  ): Promise<PostResult> {
+    // カテゴリ名をIDに変換
+    let categoryIds: number[] = [];
+    const categoryNames = this.extractCategoryNames(metadata);
+    
+    if (categoryNames.length > 0) {
+      console.log('📂 カテゴリ名検出:', categoryNames);
+      categoryIds = await this.convertCategoriesToIds(categoryNames);
+      console.log('🔢 変換後カテゴリID:', categoryIds);
+    }
+
+    const url = `${this.config.apiUrl}/wp-json/wp/v2/posts`;
+    
+    const postData: any = {
+      title: title,
+      content: content,
+      status: metadata.status || 'draft'
+    };
+
+    // オプション項目の追加
+    if (metadata.slug) postData.slug = metadata.slug;
+    if (metadata.date) postData.date = metadata.date;
+    if (featuredImageId) postData.featured_media = featuredImageId;
+
+    // カテゴリIDを設定（整数の配列として）
+    if (categoryIds.length > 0) {
+      postData.categories = categoryIds;
+      console.log('📂 送信カテゴリID:', categoryIds);
+    }
+
+    // SEOメタデータ設定
+    if (metadata.meta_description) {
+      postData.excerpt = metadata.meta_description;
+      postData.meta = {
+        'meta_description': metadata.meta_description,
+        '_yoast_wpseo_metadesc': metadata.meta_description,
+        'rank_math_description': metadata.meta_description
+      };
+      console.log('📝 meta_description設定:', metadata.meta_description.substring(0, 50) + '...');
+    }
+
+    // Polylang対応（言語設定）
+    if (metadata.language) {
+      postData.lang = metadata.language;
+      if (!postData.meta) postData.meta = {};
+      postData.meta.language = metadata.language;
+      console.log('🌐 言語設定:', metadata.language);
+    }
+
+    console.log('📤 最終送信データ:', JSON.stringify(postData, null, 2));
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': this.getAuthHeader(),
+        'Content-Type': 'application/json; charset=utf-8'
+      },
+      body: JSON.stringify(postData)
+    });
+
+    console.log('📥 レスポンス:', response.status, response.statusText);
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ 投稿成功:', {
+        id: result.id,
+        title: result.title.rendered,
+        categories: result.categories,
+        url: result.link
+      });
+
+      // 投稿後確認
+      await this.verifyPost(result.id, categoryNames, categoryIds);
+
+      return {
+        success: true,
+        postId: result.id,
+        url: result.link,
+        isUpdate: false
+      };
+    } else {
+      const errorText = await response.text();
+      console.error('❌ 投稿失敗:', errorText);
+      
+      // エラー詳細を解析
+      try {
+        const errorJson = JSON.parse(errorText);
+        if (errorJson.code === 'rest_invalid_param' && errorJson.message.includes('categories')) {
+          return {
+            success: false,
+            error: `カテゴリ設定エラー: WordPressが整数のカテゴリIDを期待していますが、文字列が送信された可能性があります。変換処理を確認してください。`
+          };
+        }
+      } catch (parseError) {
+        // JSON解析失敗は無視
+      }
+      
+      return {
+        success: false,
+        error: `投稿失敗: ${response.status} ${response.statusText} - ${errorText}`
       };
     }
   }
@@ -437,6 +612,7 @@ export class WordPressClient {
   public generateYamlExample(): string {
     return `---
 title: "記事タイトル"
+slug: "article-slug"
 meta_description: "記事の説明文"
 categories: [プログラミング, WordPress, VS Code]
 language: ja
@@ -445,10 +621,10 @@ status: draft
 
 # 記事本文
 
-この形式で categories に配列を指定すると：
-1. 拡張機能が自動的にカテゴリIDに変換
-2. WordPressに正しい形式で送信
-3. 存在しないカテゴリは自動作成`;
+slugが指定されている場合：
+1. 既存記事を検索
+2. 見つかれば更新、見つからなければ新規作成
+3. 同じslugの記事は上書きされます`;
   }
 
   /**
