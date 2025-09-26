@@ -86,12 +86,14 @@ class MarkdownParser {
         return html;
     }
     /**
-     * コードブロック処理
+     * コードブロック処理（改行を正しく保持）
      */
     processCodeBlocks(text) {
         return text.replace(/```(\w+)?\n(.*?)\n```/gs, (match, language, code) => {
             const lang = language ? ` class="language-${language}"` : '';
-            return `<pre><code${lang}>${this.escapeHtml(code)}</code></pre>`;
+            // 改行を明示的に<br>タグに変換
+            const escapedCode = this.escapeHtml(code).replace(/\n/g, '<br>');
+            return `<pre><code${lang}>${escapedCode}</code></pre>`;
         });
     }
     /**
