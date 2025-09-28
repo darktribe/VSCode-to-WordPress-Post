@@ -2,7 +2,7 @@
     "name": "vscode-to-wordpress-post-by-markdown",
     "displayName": "VS Code to WordPress Post by Markdown",
     "description": "Markdown to WordPress poster with Japanese support",
-    "version": "1.5.3",
+    "version": "1.5.4",
     "publisher": "showya-kisaragi",
     "repository": {
     "type": "git",

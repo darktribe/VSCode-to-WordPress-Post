@@ -353,6 +353,7 @@ class MarkdownParser {
                     result.push(`<p>${currentParagraph.join('<br>')}</p>`);
                     currentParagraph = [];
                 }
+                // 空行は出力しない（段落区切りとしてのみ機能）
                 continue;
             }
             // 通常の行：行頭スペースを保持
