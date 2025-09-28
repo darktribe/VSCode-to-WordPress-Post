@@ -86,19 +86,15 @@ export class MarkdownParser {
     // 見出し
     html = this.processHeadings(html);
     
-    // リスト（改良版）- 段落処理の前に実行
+    // リスト（改良版）- インライン記法も内部で処理するため先に実行
     html = this.processListsImproved(html);
     
     // テーブル
     html = this.processTables(html);
     
-    // 太字（イタリックは無効化済み）
+    // 残りのインライン記法（リスト外の箇所）
     html = this.processBold(html);
-    
-    // インラインコード
     html = this.processInlineCode(html);
-    
-    // リンク・画像
     html = this.processImages(html);
     html = this.processLinks(html);
     
@@ -163,13 +159,12 @@ export class MarkdownParser {
   }
 
   /**
-   * 改良版リスト処理（ネスト対応・インデント正確計算）
+   * 改良版リスト処理（正しいHTMLネスト構造生成＋インライン記法処理）
    */
   private processListsImproved(text: string): string {
     const lines = text.split('\n');
     const result: string[] = [];
-    const listStack: Array<{type: 'ul' | 'ol', level: number}> = [];
-    let isInList = false;
+    const listStack: Array<{type: 'ul' | 'ol', level: number, hasContent: boolean}> = [];
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -181,41 +176,58 @@ export class MarkdownParser {
       // 無序リスト（- item）
       const unorderedMatch = trimmed.match(/^-\s+(.+)$/);
       if (unorderedMatch) {
-        const content = unorderedMatch[1];
-        this.adjustListStackImproved(result, listStack, 'ul', indentLevel);
-        result.push(`<li>${content}</li>`);
-        isInList = true;
+        const rawContent = unorderedMatch[1];
+        // リスト項目内のインライン記法を処理
+        const processedContent = this.processInlineMarkup(rawContent);
+        this.adjustListStackForProperNesting(result, listStack, 'ul', indentLevel);
+        result.push(`<li>${processedContent}</li>`);
       }
       // 有序リスト（1. item）
       else if (trimmed.match(/^\d+\.\s+(.+)$/)) {
-        const content = trimmed.replace(/^\d+\.\s+/, '');
-        this.adjustListStackImproved(result, listStack, 'ol', indentLevel);
-        result.push(`<li>${content}</li>`);
-        isInList = true;
+        const rawContent = trimmed.replace(/^\d+\.\s+/, '');
+        // リスト項目内のインライン記法を処理
+        const processedContent = this.processInlineMarkup(rawContent);
+        this.adjustListStackForProperNesting(result, listStack, 'ol', indentLevel);
+        result.push(`<li>${processedContent}</li>`);
       }
-      // リスト以外
+      // 空行
+      else if (trimmed === '') {
+        result.push(line);
+      }
+      // リスト項目以外の行
       else {
-        // 空行でもリストを継続（次の行がリストかチェック）
-        if (trimmed === '' && isInList && i + 1 < lines.length) {
-          const nextLine = lines[i + 1];
-          const nextTrimmed = nextLine.trim();
-          if (nextTrimmed.match(/^(-|\d+\.)\s+/) || nextTrimmed === '') {
-            // 次の行もリストまたは空行なのでリストを継続
-            continue;
-          }
+        // 見出しやHTMLタグなど、明らかにリストを終了すべき行
+        if (this.isHtmlTag(trimmed) || trimmed.match(/^#{1,6}\s+/)) {
+          this.closeAllListsWithProperNesting(result, listStack);
         }
-        
-        // 全てのリストを閉じる
-        this.closeAllLists(result, listStack);
-        isInList = false;
         result.push(line);
       }
     }
 
     // 最後に残ったリストタグを全て閉じる
-    this.closeAllLists(result, listStack);
+    this.closeAllListsWithProperNesting(result, listStack);
 
     return result.join('\n');
+  }
+
+  /**
+   * リスト項目内のインライン記法を処理
+   */
+  private processInlineMarkup(content: string): string {
+    let processed = content;
+    
+    // 太字処理
+    processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    processed = processed.replace(/__(.+?)__/g, '<strong>$1</strong>');
+    
+    // インラインコード
+    processed = processed.replace(/`([^`]+?)`/g, '<code>$1</code>');
+    
+    // リンク・画像
+    processed = processed.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
+    processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+    
+    return processed;
   }
 
   /**
@@ -244,11 +256,11 @@ export class MarkdownParser {
   }
 
   /**
-   * 改良版リストスタック調整
+   * 正しいHTMLネスト構造でリストスタックを調整
    */
-  private adjustListStackImproved(
+  private adjustListStackForProperNesting(
     result: string[], 
-    listStack: Array<{type: 'ul' | 'ol', level: number}>,
+    listStack: Array<{type: 'ul' | 'ol', level: number, hasContent: boolean}>,
     currentType: 'ul' | 'ol',
     currentLevel: number
   ): void {
@@ -256,6 +268,9 @@ export class MarkdownParser {
     while (listStack.length > 0 && listStack[listStack.length - 1].level > currentLevel) {
       const closing = listStack.pop()!;
       result.push(`</${closing.type}>`);
+      if (listStack.length > 0) {
+        result.push('</li>');
+      }
     }
 
     // 同じレベルで異なるタイプの場合、閉じて新しく開始
@@ -264,29 +279,49 @@ export class MarkdownParser {
         listStack[listStack.length - 1].type !== currentType) {
       const closing = listStack.pop()!;
       result.push(`</${closing.type}>`);
+      if (listStack.length > 0) {
+        result.push('</li>');
+      }
     }
 
-    // 新しいレベルまたはタイプのリストを開始
-    if (listStack.length === 0 || 
-        listStack[listStack.length - 1].level < currentLevel ||
-        (listStack[listStack.length - 1].level === currentLevel && 
-         listStack[listStack.length - 1].type !== currentType)) {
+    // 同じレベルで同じタイプの場合、前のリスト項目を閉じる
+    if (listStack.length > 0 && 
+        listStack[listStack.length - 1].level === currentLevel &&
+        listStack[listStack.length - 1].type === currentType &&
+        listStack[listStack.length - 1].hasContent) {
+      result.push('</li>');
+      listStack[listStack.length - 1].hasContent = false;
+    }
+
+    // 新しいレベルのリストを開始
+    if (listStack.length === 0 || listStack[listStack.length - 1].level < currentLevel) {
+      if (listStack.length > 0) {
+        // 親のli要素の中にネストしたリストを開始
+        const lastIndex = result.length - 1;
+        if (result[lastIndex].endsWith('</li>')) {
+          result[lastIndex] = result[lastIndex].replace('</li>', '');
+          listStack[listStack.length - 1].hasContent = true;
+        }
+      }
       
       result.push(`<${currentType}>`);
-      listStack.push({type: currentType, level: currentLevel});
+      listStack.push({type: currentType, level: currentLevel, hasContent: false});
     }
   }
 
   /**
-   * 全てのリストタグを閉じる
+   * 正しいHTMLネスト構造ですべてのリストタグを閉じる
    */
-  private closeAllLists(
+  private closeAllListsWithProperNesting(
     result: string[], 
-    listStack: Array<{type: 'ul' | 'ol', level: number}>
+    listStack: Array<{type: 'ul' | 'ol', level: number, hasContent: boolean}>
   ): void {
     while (listStack.length > 0) {
       const closing = listStack.pop()!;
       result.push(`</${closing.type}>`);
+      if (listStack.length > 0) {
+        result.push('</li>');
+      }
     }
   }
 
@@ -317,12 +352,12 @@ export class MarkdownParser {
         }
 
         // セルを分割
-        const cells = trimmed.slice(1, -1).split('|').map(cell => cell.trim());
+        const cells = trimmed.slice(1, -1).split('|').map((cell: string) => cell.trim());
         
         if (!isHeaderProcessed) {
           // ヘッダー行
           result.push('<thead><tr>');
-          cells.forEach(cell => {
+          cells.forEach((cell: string) => {
             result.push(`<th>${cell}</th>`);
           });
           result.push('</tr></thead><tbody>');
@@ -330,7 +365,7 @@ export class MarkdownParser {
         } else {
           // データ行
           result.push('<tr>');
-          cells.forEach(cell => {
+          cells.forEach((cell: string) => {
             result.push(`<td>${cell}</td>`);
           });
           result.push('</tr>');
