@@ -635,3 +635,4 @@ slugが指定されている場合：
     return `Basic ${credentials}`;
   }
 }
+

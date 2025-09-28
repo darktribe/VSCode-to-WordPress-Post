@@ -1,7 +1,7 @@
 "use strict";
 /**
  * WordPress Post Extension - Phase 1
- * 自前実装Markdown→HTML変換エンジン
+ * 自前実装Markdown→HTML変換エンジン（改行・スペース保持改良版）
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MarkdownParser = void 0;
@@ -70,6 +70,10 @@ class MarkdownParser {
         html = this.processCodeBlocks(html);
         // 見出し
         html = this.processHeadings(html);
+        // リスト（改良版）- 段落処理の前に実行
+        html = this.processListsImproved(html);
+        // テーブル
+        html = this.processTables(html);
         // 太字（イタリックは無効化済み）
         html = this.processBold(html);
         // インラインコード
@@ -77,12 +81,8 @@ class MarkdownParser {
         // リンク・画像
         html = this.processImages(html);
         html = this.processLinks(html);
-        // リスト
-        html = this.processLists(html);
-        // テーブル
-        html = this.processTables(html);
-        // 段落
-        html = this.processParagraphs(html);
+        // 段落処理（改行・スペース保持版）- 最後に実行
+        html = this.processParagraphsImproved(html);
         return html;
     }
     /**
@@ -134,37 +134,47 @@ class MarkdownParser {
         return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
     }
     /**
-    * ネストしたリスト処理（改良版）
-    * インデント（スペース2個または4個、タブ）でネストレベルを判定
-    */
-    processLists(text) {
+     * 改良版リスト処理（ネスト対応・インデント正確計算）
+     */
+    processListsImproved(text) {
         const lines = text.split('\n');
         const result = [];
         const listStack = [];
+        let isInList = false;
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             const trimmed = line.trim();
-            // インデントレベルを計算（スペース2個=1レベル、タブ=1レベル）
-            const indentMatch = line.match(/^(\s*)/);
-            const indentText = indentMatch ? indentMatch[1] : '';
-            const indentLevel = this.calculateIndentLevel(indentText);
+            // インデントレベルを正確に計算
+            const indentLevel = this.calculateIndentLevelPrecise(line);
             // 無序リスト（- item）
             const unorderedMatch = trimmed.match(/^-\s+(.+)$/);
             if (unorderedMatch) {
                 const content = unorderedMatch[1];
-                this.adjustListStack(result, listStack, 'ul', indentLevel);
+                this.adjustListStackImproved(result, listStack, 'ul', indentLevel);
                 result.push(`<li>${content}</li>`);
+                isInList = true;
             }
             // 有序リスト（1. item）
             else if (trimmed.match(/^\d+\.\s+(.+)$/)) {
                 const content = trimmed.replace(/^\d+\.\s+/, '');
-                this.adjustListStack(result, listStack, 'ol', indentLevel);
+                this.adjustListStackImproved(result, listStack, 'ol', indentLevel);
                 result.push(`<li>${content}</li>`);
+                isInList = true;
             }
             // リスト以外
             else {
+                // 空行でもリストを継続（次の行がリストかチェック）
+                if (trimmed === '' && isInList && i + 1 < lines.length) {
+                    const nextLine = lines[i + 1];
+                    const nextTrimmed = nextLine.trim();
+                    if (nextTrimmed.match(/^(-|\d+\.)\s+/) || nextTrimmed === '') {
+                        // 次の行もリストまたは空行なのでリストを継続
+                        continue;
+                    }
+                }
                 // 全てのリストを閉じる
                 this.closeAllLists(result, listStack);
+                isInList = false;
                 result.push(line);
             }
         }
@@ -173,48 +183,32 @@ class MarkdownParser {
         return result.join('\n');
     }
     /**
-     * インデントレベルを計算
-     * スペース2個または4個、タブで1レベルとカウント
+     * より正確なインデントレベル計算
      */
-    calculateIndentLevel(indentText) {
+    calculateIndentLevelPrecise(line) {
         let level = 0;
         let i = 0;
-        while (i < indentText.length) {
-            if (indentText[i] === '\t') {
+        while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+            if (line[i] === '\t') {
                 level++;
                 i++;
             }
-            else if (indentText[i] === ' ') {
-                // スペースの場合、2個または4個で1レベル
-                if (i + 1 < indentText.length && indentText[i + 1] === ' ') {
-                    if (i + 3 < indentText.length &&
-                        indentText[i + 2] === ' ' &&
-                        indentText[i + 3] === ' ') {
-                        // 4スペース
-                        level++;
-                        i += 4;
-                    }
-                    else {
-                        // 2スペース
-                        level++;
-                        i += 2;
-                    }
-                }
-                else {
-                    // 1スペースは0.5レベル（切り捨て）
+            else if (line[i] === ' ') {
+                // スペース4個で1レベル、2個で0.5レベル
+                let spaceCount = 0;
+                while (i < line.length && line[i] === ' ') {
+                    spaceCount++;
                     i++;
                 }
-            }
-            else {
-                break;
+                level += Math.floor(spaceCount / 2); // 2スペースで1レベル
             }
         }
         return level;
     }
     /**
-     * リストスタックを調整（ネスト処理の核心部分）
+     * 改良版リストスタック調整
      */
-    adjustListStack(result, listStack, currentType, currentLevel) {
+    adjustListStackImproved(result, listStack, currentType, currentLevel) {
         // 現在のレベルより深いスタックを削除
         while (listStack.length > 0 && listStack[listStack.length - 1].level > currentLevel) {
             const closing = listStack.pop();
@@ -301,33 +295,70 @@ class MarkdownParser {
         return result.join('\n');
     }
     /**
-     * 段落処理
+     * 改良版段落処理（行頭スペース・改行保持）
      */
-    processParagraphs(text) {
+    processParagraphsImproved(text) {
         const lines = text.split('\n');
         const result = [];
         let currentParagraph = [];
-        for (const line of lines) {
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const trimmed = line.trim();
-            // 空行または既にHTMLタグの行
-            if (trimmed === '' || this.isHtmlTag(trimmed)) {
+            // 既にHTMLタグの行はそのまま通す
+            if (this.isHtmlTag(trimmed)) {
+                // 段落を閉じる
                 if (currentParagraph.length > 0) {
-                    result.push(`<p>${currentParagraph.join(' ')}</p>`);
+                    result.push(`<p>${currentParagraph.join('<br>')}</p>`);
                     currentParagraph = [];
                 }
-                if (trimmed !== '') {
-                    result.push(line);
+                result.push(line);
+                continue;
+            }
+            // 空行の場合
+            if (trimmed === '') {
+                // 段落を閉じる
+                if (currentParagraph.length > 0) {
+                    result.push(`<p>${currentParagraph.join('<br>')}</p>`);
+                    currentParagraph = [];
                 }
+                continue;
             }
-            else {
-                currentParagraph.push(trimmed);
-            }
+            // 通常の行：行頭スペースを保持
+            const processedLine = this.preserveLeadingSpaces(line);
+            currentParagraph.push(processedLine);
         }
         // 最後の段落
         if (currentParagraph.length > 0) {
-            result.push(`<p>${currentParagraph.join(' ')}</p>`);
+            result.push(`<p>${currentParagraph.join('<br>')}</p>`);
         }
         return result.join('\n');
+    }
+    /**
+     * 行頭スペースを保持する処理
+     */
+    preserveLeadingSpaces(line) {
+        const match = line.match(/^(\s*)(.*)/);
+        if (!match)
+            return line;
+        const [, leadingSpaces, content] = match;
+        // 行頭スペースを&nbsp;に変換（半角・全角を区別）
+        let preservedSpaces = '';
+        for (const char of leadingSpaces) {
+            if (char === ' ') {
+                preservedSpaces += '&nbsp;'; // 半角スペース
+            }
+            else if (char === '　') {
+                preservedSpaces += '&#12288;'; // 全角スペース
+            }
+            else if (char === '\t') {
+                preservedSpaces += '&nbsp;&nbsp;&nbsp;&nbsp;'; // タブは4つの&nbsp;
+            }
+            else {
+                preservedSpaces += char;
+            }
+        }
+        // contentはそのまま返す（HTMLエスケープしない）
+        return preservedSpaces + content;
     }
     /**
      * HTMLタグかどうか判定
