@@ -1,7 +1,7 @@
 "use strict";
 /**
  * WordPress Post Extension - Phase 1
- * 自前実装Markdown→HTML変換エンジン（改行・スペース保持改良版）
+ * 自前実装Markdown→HTML変換エンジン（リスト処理修正版）
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MarkdownParser = void 0;
@@ -62,24 +62,22 @@ class MarkdownParser {
         return metadata;
     }
     /**
-     * Markdown本文をHTMLに変換
+     * Markdown本文をHTMLに変換（処理順序を修正）
      */
     convertToHtml(content) {
         let html = content;
-        // コードブロックを先に処理（他の記法と干渉しないよう）
+        // 1. コードブロックを先に処理（他の記法と干渉しないよう）
         html = this.processCodeBlocks(html);
-        // 見出し
+        // 2. ブロックレベル要素を処理
         html = this.processHeadings(html);
-        // リスト（改良版）- インライン記法も内部で処理するため先に実行
-        html = this.processListsImproved(html);
-        // テーブル
         html = this.processTables(html);
-        // 残りのインライン記法（リスト外の箇所）
+        html = this.processListsImproved(html);
+        // 3. インライン記法を処理
         html = this.processBold(html);
         html = this.processInlineCode(html);
         html = this.processImages(html);
         html = this.processLinks(html);
-        // 段落処理（改行・スペース保持版）- 最後に実行
+        // 4. 最後に段落処理（すべての構造が確定してから）
         html = this.processParagraphsImproved(html);
         return html;
     }
@@ -132,13 +130,14 @@ class MarkdownParser {
         return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
     }
     /**
-     * 改良版リスト処理（正しいHTMLネスト構造生成＋インライン記法処理）
+     * 改良版リスト処理（段落処理との整合性を保つ）
      */
     processListsImproved(text) {
         const lines = text.split('\n');
         const result = [];
         const listStack = [];
-        for (let i = 0; i < lines.length; i++) {
+        let i = 0;
+        while (i < lines.length) {
             const line = lines[i];
             const trimmed = line.trim();
             // インデントレベルを正確に計算
@@ -146,51 +145,72 @@ class MarkdownParser {
             // 無序リスト（- item）
             const unorderedMatch = trimmed.match(/^-\s+(.+)$/);
             if (unorderedMatch) {
-                const rawContent = unorderedMatch[1];
-                // リスト項目内のインライン記法を処理
-                const processedContent = this.processInlineMarkup(rawContent);
-                this.adjustListStackForProperNesting(result, listStack, 'ul', indentLevel);
-                result.push(`<li>${processedContent}</li>`);
+                const content = unorderedMatch[1];
+                this.adjustListStack(result, listStack, 'ul', indentLevel);
+                result.push(`<li>${content}</li>`);
+                i++;
+                continue;
             }
             // 有序リスト（1. item）
-            else if (trimmed.match(/^\d+\.\s+(.+)$/)) {
-                const rawContent = trimmed.replace(/^\d+\.\s+/, '');
-                // リスト項目内のインライン記法を処理
-                const processedContent = this.processInlineMarkup(rawContent);
-                this.adjustListStackForProperNesting(result, listStack, 'ol', indentLevel);
-                result.push(`<li>${processedContent}</li>`);
+            const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+            if (orderedMatch) {
+                const content = orderedMatch[1];
+                this.adjustListStack(result, listStack, 'ol', indentLevel);
+                result.push(`<li>${content}</li>`);
+                i++;
+                continue;
             }
-            // 空行
-            else if (trimmed === '') {
-                result.push(line);
-            }
-            // リスト項目以外の行
-            else {
-                // 見出しやHTMLタグなど、明らかにリストを終了すべき行
-                if (this.isHtmlTag(trimmed) || trimmed.match(/^#{1,6}\s+/)) {
-                    this.closeAllListsWithProperNesting(result, listStack);
+            // リスト中で空行に遭遇した場合の処理
+            if (listStack.length > 0 && trimmed === '') {
+                // 次の行をチェックして、リストが続くかどうか判定
+                let nextLineIndex = i + 1;
+                let foundNonEmptyLine = false;
+                let isListContinuing = false;
+                // 空行を飛ばして次の非空行を探す
+                while (nextLineIndex < lines.length) {
+                    const nextLine = lines[nextLineIndex].trim();
+                    if (nextLine !== '') {
+                        foundNonEmptyLine = true;
+                        // 次の非空行がリスト項目かチェック
+                        if (nextLine.match(/^-\s+/) || nextLine.match(/^\d+\.\s+/)) {
+                            isListContinuing = true;
+                        }
+                        break;
+                    }
+                    nextLineIndex++;
                 }
-                result.push(line);
+                if (!foundNonEmptyLine || !isListContinuing) {
+                    // リスト終了：すべてのリストを閉じる
+                    this.closeAllLists(result, listStack);
+                    // 空行を保持（段落処理で使用される）
+                    result.push(line);
+                }
+                else {
+                    // リスト継続：空行をスキップ
+                    // 何もしない（空行は無視）
+                }
+                i++;
+                continue;
             }
+            // 構造的な要素（見出し、HTMLタグ）に遭遇した場合
+            if (this.isStructuralHtmlTag(trimmed) || trimmed.match(/^#{1,6}\s+/)) {
+                // リストを強制終了
+                this.closeAllLists(result, listStack);
+                result.push(line);
+                i++;
+                continue;
+            }
+            // 通常の行
+            if (listStack.length > 0) {
+                // リスト中の非リスト行：リストを終了
+                this.closeAllLists(result, listStack);
+            }
+            result.push(line);
+            i++;
         }
         // 最後に残ったリストタグを全て閉じる
-        this.closeAllListsWithProperNesting(result, listStack);
+        this.closeAllLists(result, listStack);
         return result.join('\n');
-    }
-    /**
-     * リスト項目内のインライン記法を処理
-     */
-    processInlineMarkup(content) {
-        let processed = content;
-        // 太字処理
-        processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        processed = processed.replace(/__(.+?)__/g, '<strong>$1</strong>');
-        // インラインコード
-        processed = processed.replace(/`([^`]+?)`/g, '<code>$1</code>');
-        // リンク・画像
-        processed = processed.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
-        processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-        return processed;
     }
     /**
      * より正確なインデントレベル計算
@@ -204,7 +224,6 @@ class MarkdownParser {
                 i++;
             }
             else if (line[i] === ' ') {
-                // スペース4個で1レベル、2個で0.5レベル
                 let spaceCount = 0;
                 while (i < line.length && line[i] === ' ') {
                     spaceCount++;
@@ -216,16 +235,13 @@ class MarkdownParser {
         return level;
     }
     /**
-     * 正しいHTMLネスト構造でリストスタックを調整
+     * リストスタック調整
      */
-    adjustListStackForProperNesting(result, listStack, currentType, currentLevel) {
+    adjustListStack(result, listStack, currentType, currentLevel) {
         // 現在のレベルより深いスタックを削除
         while (listStack.length > 0 && listStack[listStack.length - 1].level > currentLevel) {
             const closing = listStack.pop();
             result.push(`</${closing.type}>`);
-            if (listStack.length > 0) {
-                result.push('</li>');
-            }
         }
         // 同じレベルで異なるタイプの場合、閉じて新しく開始
         if (listStack.length > 0 &&
@@ -233,42 +249,20 @@ class MarkdownParser {
             listStack[listStack.length - 1].type !== currentType) {
             const closing = listStack.pop();
             result.push(`</${closing.type}>`);
-            if (listStack.length > 0) {
-                result.push('</li>');
-            }
-        }
-        // 同じレベルで同じタイプの場合、前のリスト項目を閉じる
-        if (listStack.length > 0 &&
-            listStack[listStack.length - 1].level === currentLevel &&
-            listStack[listStack.length - 1].type === currentType &&
-            listStack[listStack.length - 1].hasContent) {
-            result.push('</li>');
-            listStack[listStack.length - 1].hasContent = false;
         }
         // 新しいレベルのリストを開始
         if (listStack.length === 0 || listStack[listStack.length - 1].level < currentLevel) {
-            if (listStack.length > 0) {
-                // 親のli要素の中にネストしたリストを開始
-                const lastIndex = result.length - 1;
-                if (result[lastIndex].endsWith('</li>')) {
-                    result[lastIndex] = result[lastIndex].replace('</li>', '');
-                    listStack[listStack.length - 1].hasContent = true;
-                }
-            }
             result.push(`<${currentType}>`);
-            listStack.push({ type: currentType, level: currentLevel, hasContent: false });
+            listStack.push({ type: currentType, level: currentLevel });
         }
     }
     /**
-     * 正しいHTMLネスト構造ですべてのリストタグを閉じる
+     * すべてのリストタグを閉じる
      */
-    closeAllListsWithProperNesting(result, listStack) {
+    closeAllLists(result, listStack) {
         while (listStack.length > 0) {
             const closing = listStack.pop();
             result.push(`</${closing.type}>`);
-            if (listStack.length > 0) {
-                result.push('</li>');
-            }
         }
     }
     /**
@@ -327,7 +321,7 @@ class MarkdownParser {
         return result.join('\n');
     }
     /**
-     * 改良版段落処理（行頭スペース・改行保持）
+     * 改良版段落処理（リスト後の処理を含む）
      */
     processParagraphsImproved(text) {
         const lines = text.split('\n');
@@ -336,8 +330,8 @@ class MarkdownParser {
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             const trimmed = line.trim();
-            // 既にHTMLタグの行はそのまま通す
-            if (this.isHtmlTag(trimmed)) {
+            // 既に構造的HTMLタグの行はそのまま通す
+            if (this.isStructuralHtmlTag(trimmed)) {
                 // 段落を閉じる
                 if (currentParagraph.length > 0) {
                     result.push(`<p>${currentParagraph.join('<br>')}</p>`);
@@ -353,7 +347,6 @@ class MarkdownParser {
                     result.push(`<p>${currentParagraph.join('<br>')}</p>`);
                     currentParagraph = [];
                 }
-                // 空行は出力しない（段落区切りとしてのみ機能）
                 continue;
             }
             // 通常の行：行頭スペースを保持
@@ -390,14 +383,29 @@ class MarkdownParser {
                 preservedSpaces += char;
             }
         }
-        // contentはそのまま返す（HTMLエスケープしない）
         return preservedSpaces + content;
     }
     /**
-     * HTMLタグかどうか判定
+     * 構造的HTMLタグかどうか判定（厳密版）
      */
-    isHtmlTag(line) {
-        return /^<\/?[a-zA-Z][^>]*>/.test(line.trim());
+    isStructuralHtmlTag(line) {
+        const structuralTags = [
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+            'p', 'div', 'section', 'article', 'nav', 'aside', 'header', 'footer',
+            'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+            'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+            'pre', 'code', 'blockquote',
+            'form', 'fieldset', 'legend'
+        ];
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('<'))
+            return false;
+        // 開始タグまたは終了タグのタグ名を抽出
+        const tagMatch = trimmed.match(/^<\/?([a-zA-Z][a-zA-Z0-9]*)/);
+        if (!tagMatch)
+            return false;
+        const tagName = tagMatch[1].toLowerCase();
+        return structuralTags.includes(tagName);
     }
     /**
      * HTMLエスケープ
