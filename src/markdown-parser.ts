@@ -1,6 +1,6 @@
 /**
  * WordPress Post Extension - Phase 1
- * 自前実装Markdown→HTML変換エンジン（リスト処理修正版）
+ * 自前実装Markdown→HTML変換エンジン（リスト処理修正版 + 打ち消し線・表対応）
  */
 
 export interface MarkdownParseResult {
@@ -90,6 +90,7 @@ export class MarkdownParser {
     
     // 3. インライン記法を処理
     html = this.processBold(html);
+    html = this.processStrikethrough(html); // 打ち消し線を追加
     html = this.processInlineCode(html);
     html = this.processImages(html);
     html = this.processLinks(html);
@@ -131,6 +132,14 @@ export class MarkdownParser {
     // __記法
     text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
     return text;
+  }
+
+  /**
+   * 打ち消し線処理（新規追加）
+   */
+  private processStrikethrough(text: string): string {
+    // ~~記法
+    return text.replace(/~~(.+?)~~/g, '<del>$1</del>');
   }
 
   /**
@@ -317,7 +326,7 @@ export class MarkdownParser {
   }
 
   /**
-   * テーブル処理
+   * テーブル処理（修正版）
    */
   private processTables(text: string): string {
     const lines = text.split('\n');
@@ -329,52 +338,79 @@ export class MarkdownParser {
       const line = lines[i];
       const trimmed = line.trim();
 
-      // テーブル行の判定（|で始まり|で終わる）
-      if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-        // 区切り行（|---|---|）をスキップ
-        if (trimmed.match(/^\|[\s-|]+\|$/)) {
+      // テーブル行の判定（|で始まり|で終わる、または|を含む）
+      if (trimmed.includes('|')) {
+        // 区切り行（|---|---|）の判定
+        const isSeparatorLine = /^\|?[\s:-]*-[\s:-]*(\|[\s:-]*-[\s:-]*)+\|?$/.test(trimmed);
+        
+        if (isSeparatorLine) {
+          // 区切り行：ヘッダーとボディの境界
+          if (!inTable) {
+            // テーブル開始（前の行がヘッダーのはず）
+            inTable = true;
+            // 前の行を削除してヘッダーとして再処理
+            const headerLine = result.pop();
+            if (headerLine) {
+              result.push('<table>');
+              result.push('<thead><tr>');
+              const headerCells = this.parseTableRow(headerLine);
+              headerCells.forEach((cell: string) => {
+                result.push(`<th>${cell}</th>`);
+              });
+              result.push('</tr></thead><tbody>');
+              isHeaderProcessed = true;
+            }
+          }
           continue;
         }
 
-        if (!inTable) {
-          result.push('<table>');
-          inTable = true;
-          isHeaderProcessed = false;
-        }
-
-        // セルを分割
-        const cells = trimmed.slice(1, -1).split('|').map((cell: string) => cell.trim());
-        
-        if (!isHeaderProcessed) {
-          // ヘッダー行
-          result.push('<thead><tr>');
-          cells.forEach((cell: string) => {
-            result.push(`<th>${cell}</th>`);
-          });
-          result.push('</tr></thead><tbody>');
-          isHeaderProcessed = true;
-        } else {
+        if (inTable) {
           // データ行
           result.push('<tr>');
+          const cells = this.parseTableRow(trimmed);
           cells.forEach((cell: string) => {
             result.push(`<td>${cell}</td>`);
           });
           result.push('</tr>');
+        } else {
+          // まだテーブルモードに入っていない場合は一時保存
+          result.push(line);
         }
       } else {
+        // テーブル行ではない
         if (inTable) {
+          // テーブル終了
           result.push('</tbody></table>');
           inTable = false;
+          isHeaderProcessed = false;
         }
         result.push(line);
       }
     }
 
+    // 最後にテーブルが閉じられていない場合
     if (inTable) {
       result.push('</tbody></table>');
     }
 
     return result.join('\n');
+  }
+
+  /**
+   * テーブル行をセルに分割（新規追加）
+   */
+  private parseTableRow(line: string): string[] {
+    const trimmed = line.trim();
+    // 先頭と末尾の|を除去
+    let content = trimmed;
+    if (content.startsWith('|')) {
+      content = content.substring(1);
+    }
+    if (content.endsWith('|')) {
+      content = content.substring(0, content.length - 1);
+    }
+    // セルに分割してトリム
+    return content.split('|').map(cell => cell.trim());
   }
 
   /**
