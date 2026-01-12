@@ -10,6 +10,27 @@ export class WordPressClient {
 
   constructor(config: WordPressConfig) {
     this.config = config;
+    // API URLを正規化（末尾のスラッシュを削除、/wp-jsonが含まれている場合は警告）
+    this.config.apiUrl = this.normalizeApiUrl(config.apiUrl);
+  }
+
+  /**
+   * API URLを正規化
+   */
+  private normalizeApiUrl(apiUrl: string): string {
+    let normalized = apiUrl.trim();
+    
+    // 末尾のスラッシュを削除
+    normalized = normalized.replace(/\/+$/, '');
+    
+    // /wp-jsonが含まれている場合は警告
+    if (normalized.includes('/wp-json')) {
+      console.warn('⚠️ API URLに/wp-jsonが含まれています。通常は不要です。');
+      console.warn('   例: https://example.com/wp-json → https://example.com');
+      normalized = normalized.replace(/\/wp-json.*$/, '');
+    }
+    
+    return normalized;
   }
 
   /**
@@ -79,7 +100,18 @@ export class WordPressClient {
           return posts[0].id;
         }
       } else {
+        const errorText = await response.text();
         console.warn('⚠️ 記事検索でエラー:', response.status, response.statusText);
+        console.warn('   アクセスURL:', url);
+        if (response.status === 404) {
+          console.error('❌ 404エラー: WordPress REST APIが見つかりません');
+          console.error('   確認事項:');
+          console.error('   1. API URLが正しいか: ' + this.config.apiUrl);
+          console.error('   2. WordPress REST APIが有効になっているか');
+          console.error('   3. パーマリンク設定が「基本」になっていないか（設定 > パーマリンク設定）');
+          console.error('   4. プラグインやテーマがREST APIを無効化していないか');
+        }
+        console.warn('   エラー詳細:', errorText.substring(0, 200));
       }
 
       return null;
@@ -181,10 +213,24 @@ export class WordPressClient {
       } else {
         const errorText = await response.text();
         console.error('❌ 更新失敗:', errorText);
+        console.error('   アクセスURL:', url);
+        
+        let errorMessage = `記事更新失敗: ${response.status} ${response.statusText}`;
+        if (response.status === 404) {
+          errorMessage += '\n\n404エラー: WordPress REST APIエンドポイントが見つかりません。\n';
+          errorMessage += '確認事項:\n';
+          errorMessage += '1. API URLが正しいか確認してください\n';
+          errorMessage += '2. WordPress REST APIが有効になっているか確認してください\n';
+          errorMessage += '3. パーマリンク設定を「基本」以外に変更してください（設定 > パーマリンク設定）\n';
+          errorMessage += '4. プラグインやテーマがREST APIを無効化していないか確認してください\n';
+          errorMessage += `\nアクセスしようとしたURL: ${url}`;
+        } else {
+          errorMessage += ` - ${errorText.substring(0, 200)}`;
+        }
         
         return {
           success: false,
-          error: `記事更新失敗: ${response.status} ${response.statusText} - ${errorText}`
+          error: errorMessage
         };
       }
 
@@ -288,6 +334,7 @@ export class WordPressClient {
     } else {
       const errorText = await response.text();
       console.error('❌ 投稿失敗:', errorText);
+      console.error('   アクセスURL:', url);
       
       // エラー詳細を解析
       try {
@@ -302,9 +349,25 @@ export class WordPressClient {
         // JSON解析失敗は無視
       }
       
+      let errorMessage = `投稿失敗: ${response.status} ${response.statusText}`;
+      if (response.status === 404) {
+        errorMessage += '\n\n404エラー: WordPress REST APIエンドポイントが見つかりません。\n';
+        errorMessage += '確認事項:\n';
+        errorMessage += '1. API URLが正しいか確認してください（末尾に/を付けないでください）\n';
+        errorMessage += '   例: https://example.com （正）\n';
+        errorMessage += '   例: https://example.com/ （誤）\n';
+        errorMessage += '   例: https://example.com/wp-json （誤）\n';
+        errorMessage += '2. WordPress REST APIが有効になっているか確認してください\n';
+        errorMessage += '3. パーマリンク設定を「基本」以外に変更してください（設定 > パーマリンク設定）\n';
+        errorMessage += '4. プラグインやテーマがREST APIを無効化していないか確認してください\n';
+        errorMessage += `\nアクセスしようとしたURL: ${url}`;
+      } else {
+        errorMessage += ` - ${errorText.substring(0, 200)}`;
+      }
+      
       return {
         success: false,
-        error: `投稿失敗: ${response.status} ${response.statusText} - ${errorText}`
+        error: errorMessage
       };
     }
   }
@@ -379,7 +442,13 @@ export class WordPressClient {
         const categories = await response.json();
         return categories;
       } else {
+        const errorText = await response.text();
         console.error('❌ カテゴリ取得失敗:', response.status, response.statusText);
+        console.error('   アクセスURL:', url);
+        if (response.status === 404) {
+          console.error('   404エラー: WordPress REST APIが見つかりません');
+        }
+        console.error('   エラー詳細:', errorText.substring(0, 200));
         return [];
       }
     } catch (error) {
@@ -419,6 +488,11 @@ export class WordPressClient {
       } else {
         const errorText = await response.text();
         console.log(`    ❌ 作成失敗: ${errorText}`);
+        console.log(`    アクセスURL: ${url}`);
+        
+        if (response.status === 404) {
+          console.error('    404エラー: WordPress REST APIが見つかりません');
+        }
         
         // エラー詳細確認
         try {
@@ -549,8 +623,26 @@ export class WordPressClient {
   public async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
       console.log('🔌 WordPress接続テスト開始');
+      console.log('   設定されたAPI URL:', this.config.apiUrl);
+      
+      // まずREST APIの基本エンドポイントをテスト
+      const baseUrl = `${this.config.apiUrl}/wp-json`;
+      console.log('   基本エンドポイントテスト:', baseUrl);
+      
+      try {
+        const baseResponse = await fetch(baseUrl);
+        if (!baseResponse.ok && baseResponse.status === 404) {
+          return {
+            success: false,
+            error: `404エラー: WordPress REST APIが見つかりません。\n\n確認事項:\n1. API URLが正しいか: ${this.config.apiUrl}\n2. パーマリンク設定を「基本」以外に変更してください（設定 > パーマリンク設定）\n3. プラグインやテーマがREST APIを無効化していないか確認してください\n\nアクセスURL: ${baseUrl}`
+          };
+        }
+      } catch (baseError) {
+        console.warn('   基本エンドポイントテスト失敗（続行）:', baseError);
+      }
       
       const url = `${this.config.apiUrl}/wp-json/wp/v2/users/me`;
+      console.log('   ユーザー情報取得:', url);
       const response = await fetch(url, {
         headers: { 'Authorization': this.getAuthHeader() }
       });
@@ -577,15 +669,30 @@ export class WordPressClient {
         return { success: true };
       } else {
         const errorText = await response.text();
+        let errorMessage = `接続エラー: ${response.status} ${response.statusText}`;
+        
+        if (response.status === 404) {
+          errorMessage += '\n\n404エラー: WordPress REST APIエンドポイントが見つかりません。\n';
+          errorMessage += '確認事項:\n';
+          errorMessage += `1. API URLが正しいか: ${this.config.apiUrl}\n`;
+          errorMessage += '2. API URLの末尾に/を付けていないか確認してください\n';
+          errorMessage += '3. パーマリンク設定を「基本」以外に変更してください（設定 > パーマリンク設定）\n';
+          errorMessage += '4. プラグインやテーマがREST APIを無効化していないか確認してください\n';
+          errorMessage += `\nアクセスしようとしたURL: ${url}`;
+        } else {
+          errorMessage += ` - ${errorText.substring(0, 200)}`;
+        }
+        
         return {
           success: false,
-          error: `接続エラー: ${response.status} ${response.statusText} - ${errorText}`
+          error: errorMessage
         };
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: `接続エラー: ${error instanceof Error ? error.message : String(error)}`
+        error: `接続エラー: ${errorMessage}\n\nAPI URL: ${this.config.apiUrl}`
       };
     }
   }
