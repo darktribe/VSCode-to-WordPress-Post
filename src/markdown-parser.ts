@@ -201,8 +201,8 @@ export class MarkdownParser {
   private processListsImproved(text: string): string {
     const lines = text.split('\n');
     const result: string[] = [];
-    const listStack: Array<{type: 'ul' | 'ol', level: number}> = [];
-    const pendingLiClose: Array<number> = []; // 閉じるべき<li>タグのレベル（スタックインデックスではなくレベルを直接保存）
+    const listStack: Array<{type: 'ul' | 'ol', level: number, counter?: number, explicitNumbering?: boolean}> = [];
+    const pendingLiClose: Array<{level: number, hasBlock: boolean, lineIndex: number}> = []; // 閉じるべき<li>タグ情報
     let i = 0;
 
     while (i < lines.length) {
@@ -216,67 +216,80 @@ export class MarkdownParser {
         // リスト項目の場合
         // まず、現在のレベルより深いレベルの保留中の<li>を閉じる（より浅いレベルに戻る場合）
         // これにより、より深いレベルのリストが閉じられる前に、その中の最後の項目の<li>を閉じる
-        while (pendingLiClose.length > 0 && pendingLiClose[pendingLiClose.length - 1] > listItemInfo.indentLevel) {
-          pendingLiClose.pop();
-          result.push('</li>');
+        while (pendingLiClose.length > 0 &&
+               pendingLiClose[pendingLiClose.length - 1].level > listItemInfo.indentLevel) {
+          const closing = pendingLiClose.pop()!;
+          this.closeListItem(result, closing);
         }
         
+        // ネストが深くなる場合は親<li>をブロック扱いにする
+        if (listStack.length > 0 &&
+            listStack[listStack.length - 1].level < listItemInfo.indentLevel &&
+            pendingLiClose.length > 0) {
+          pendingLiClose[pendingLiClose.length - 1].hasBlock = true;
+        }
+
         // 次に、深いレベルのリストを閉じる（adjustListStackで処理）
-        // この際、閉じられたリストに関連する<li>も閉じる必要がある
-        const closedLevels = this.adjustListStack(result, listStack, listItemInfo.type, listItemInfo.indentLevel);
+        // この際、閉じられたリストに関連する<li>を先に閉じてからリストを閉じる
+        const { closedLevels, closingTagsDeep, closingTagsSameLevel, openingTags } = this.adjustListStack(
+          listStack,
+          listItemInfo.type,
+          listItemInfo.indentLevel
+        );
         
         // 閉じられたレベルに関連する<li>を閉じる（閉じられたリストの中の項目の<li>）
         this.closePendingLiTagsForClosedLevels(result, pendingLiClose, closedLevels, listItemInfo.indentLevel);
         
+        // 深いレベルのリストを先に閉じる
+        result.push(...closingTagsDeep);
+        
         // 同じレベルの<li>を閉じる（同じリスト内の次の項目が来るため）
         this.closePendingLiTagsAtSameLevel(result, pendingLiClose, listItemInfo.indentLevel);
         
-        // 新しい<li>タグを開始（まだ閉じない）
-        result.push(`<li>${listItemInfo.content}`);
-        // この<li>タグのレベルを記録（レベルを直接保存）
-        pendingLiClose.push(listItemInfo.indentLevel);
+        // 同じレベルのタイプ変更によるリスト閉鎖
+        result.push(...closingTagsSameLevel);
+        result.push(...openingTags);
         
+        // 新しい<li>タグを開始（まだ閉じない）
+        const lineIndex = result.length;
+        let listItemTag = '<li>';
+        if (listItemInfo.type === 'ol') {
+          const currentList = listStack[listStack.length - 1];
+          if (currentList && currentList.type === 'ol' && currentList.level === listItemInfo.indentLevel) {
+            const explicitNumber = listItemInfo.orderNumber;
+            if (explicitNumber !== undefined && (currentList.explicitNumbering || explicitNumber !== 1)) {
+              currentList.explicitNumbering = true;
+              currentList.counter = explicitNumber;
+            } else {
+              currentList.counter = (currentList.counter ?? 0) + 1;
+            }
+            listItemTag = `<li value="${currentList.counter ?? 1}">`;
+          }
+        }
+        result.push(`${listItemTag}${listItemInfo.content}`);
+        // この<li>タグのレベルと開始行を記録
+        pendingLiClose.push({ level: listItemInfo.indentLevel, hasBlock: false, lineIndex });
+        
+        i++;
+        continue;
+      }
+
+      // リスト中の継続行（ASCIIスペース/タブのインデントのみ）を<li>内に含める
+      if (listStack.length > 0 && pendingLiClose.length > 0 && trimmed !== '' && /^[ \t]+/.test(line)) {
+        pendingLiClose[pendingLiClose.length - 1].hasBlock = true;
+        result.push(`<br>${trimmed}`);
         i++;
         continue;
       }
 
       // リスト中で空行に遭遇した場合の処理
       if (listStack.length > 0 && trimmed === '') {
-        // 次の行をチェックして、リストが続くかどうか判定
-        let nextLineIndex = i + 1;
-        let foundNonEmptyLine = false;
-        let isListContinuing = false;
-        let nextListItemLevel = -1;
-
-        // 空行を飛ばして次の非空行を探す
-        while (nextLineIndex < lines.length) {
-          const nextLine = lines[nextLineIndex];
-          const nextTrimmed = nextLine.trim();
-          if (nextTrimmed !== '') {
-            foundNonEmptyLine = true;
-            // 次の非空行がリスト項目かチェック（インデントを考慮）
-            const nextListItem = this.parseListItem(nextLine);
-            if (nextListItem) {
-              isListContinuing = true;
-              nextListItemLevel = nextListItem.indentLevel;
-            }
-            break;
-          }
-          nextLineIndex++;
-        }
-
-        if (!foundNonEmptyLine || !isListContinuing) {
-          // リスト終了：すべての保留中の<li>タグを閉じ、すべてのリストを閉じる
-          this.closeAllPendingLiTags(result, pendingLiClose);
-          this.closeAllLists(result, listStack);
-          pendingLiClose.length = 0;
-          // 空行を保持（段落処理で使用される）
-          result.push(line);
-        } else {
-          // リスト継続：空行をスキップ
-          // 次のリスト項目のレベルに応じて、必要に応じて<li>タグを閉じる
-          // これは次のループで処理される
-        }
+        // 空行はリストの区切りとして扱い、リストを確実に閉じる
+        this.closeAllPendingLiTags(result, pendingLiClose);
+        this.closeAllLists(result, listStack);
+        pendingLiClose.length = 0;
+        // 空行を保持（段落処理で使用される）
+        result.push(line);
         i++;
         continue;
       }
@@ -329,14 +342,14 @@ export class MarkdownParser {
    */
   private closePendingLiTagsAtOrAboveLevel(
     result: string[],
-    pendingLiClose: Array<number>,
+    pendingLiClose: Array<{level: number, hasBlock: boolean, lineIndex: number}>,
     currentLevel: number
   ): void {
     while (pendingLiClose.length > 0) {
-      const pendingLevel = pendingLiClose[pendingLiClose.length - 1];
+      const pendingLevel = pendingLiClose[pendingLiClose.length - 1].level;
       if (pendingLevel >= currentLevel) {
-        pendingLiClose.pop();
-        result.push('</li>');
+        const closing = pendingLiClose.pop()!;
+        this.closeListItem(result, closing);
       } else {
         break;
       }
@@ -350,7 +363,7 @@ export class MarkdownParser {
    */
   private closePendingLiTagsForClosedLevels(
     result: string[],
-    pendingLiClose: Array<number>,
+    pendingLiClose: Array<{level: number, hasBlock: boolean, lineIndex: number}>,
     closedLevels: number[],
     currentLevel: number
   ): void {
@@ -365,14 +378,14 @@ export class MarkdownParser {
     // ただし、現在のリスト項目のレベルより深いレベルの<li>のみを閉じる
     // （親リストの<li>は、closePendingLiTagsAtSameLevelで処理される）
     for (let i = pendingLiClose.length - 1; i >= 0; i--) {
-      const pendingLevel = pendingLiClose[i];
+      const pendingLevel = pendingLiClose[i].level;
       
       // 閉じられたリストのレベル以上で、かつ現在のレベルより深いレベルの<li>を閉じる
       // （例：レベル3のリストが閉じられ、現在のレベルが2の場合、レベル3以上の<li>を閉じる）
       // ただし、現在のレベルと同じかより浅いレベルの<li>は閉じない
       if (pendingLevel >= shallowestClosedLevel && pendingLevel > currentLevel) {
-        pendingLiClose.splice(i, 1);
-        result.push('</li>');
+        const closing = pendingLiClose.splice(i, 1)[0];
+        this.closeListItem(result, closing);
       }
     }
   }
@@ -383,17 +396,17 @@ export class MarkdownParser {
    */
   private closePendingLiTagsAtSameLevel(
     result: string[],
-    pendingLiClose: Array<number>,
+    pendingLiClose: Array<{level: number, hasBlock: boolean, lineIndex: number}>,
     currentLevel: number
   ): void {
     // 同じレベルの<li>タグのみ閉じる（同じリスト内の次の項目が来るため）
     while (pendingLiClose.length > 0) {
-      const pendingLevel = pendingLiClose[pendingLiClose.length - 1];
+      const pendingLevel = pendingLiClose[pendingLiClose.length - 1].level;
       
       // 同じレベルの<li>のみ閉じる
       if (pendingLevel === currentLevel) {
-        pendingLiClose.pop();
-        result.push('</li>');
+        const closing = pendingLiClose.pop()!;
+        this.closeListItem(result, closing);
       } else {
         // 異なるレベルの場合は閉じない
         break;
@@ -406,10 +419,29 @@ export class MarkdownParser {
    */
   private closeAllPendingLiTags(
     result: string[],
-    pendingLiClose: Array<number>
+    pendingLiClose: Array<{level: number, hasBlock: boolean, lineIndex: number}>
   ): void {
     while (pendingLiClose.length > 0) {
-      pendingLiClose.pop();
+      const closing = pendingLiClose.pop()!;
+      this.closeListItem(result, closing);
+    }
+  }
+
+  /**
+   * <li>タグを閉じる（単一行なら同一行で閉じる）
+   */
+  private closeListItem(
+    result: string[],
+    closing: {level: number, hasBlock: boolean, lineIndex: number}
+  ): void {
+    if (closing.hasBlock || result.length === 0) {
+      result.push('</li>');
+      return;
+    }
+    // 対応する<li>行に閉じタグを追加
+    if (closing.lineIndex >= 0 && closing.lineIndex < result.length) {
+      result[closing.lineIndex] = `${result[closing.lineIndex]}</li>`;
+    } else {
       result.push('</li>');
     }
   }
@@ -417,12 +449,12 @@ export class MarkdownParser {
   /**
    * リスト項目を解析して、タイプ、インデントレベル、内容を取得
    */
-  private parseListItem(line: string): { type: 'ul' | 'ol', indentLevel: number, content: string } | null {
+  private parseListItem(line: string): { type: 'ul' | 'ol', indentLevel: number, content: string, orderNumber?: number } | null {
     // 先頭のスペース/タブをスキップしてインデントレベルを計算
     let indentLevel = 0;
     let i = 0;
     
-    while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+    while (i < line.length && (line[i] === ' ' || line[i] === '\t' || line[i] === '　')) {
       if (line[i] === '\t') {
         indentLevel++;
         i++;
@@ -436,6 +468,9 @@ export class MarkdownParser {
         // 2スペース単位で計算し、4スペースは2レベル、6スペースは3レベルとする
         // より柔軟に対応するため、2スペース単位で計算
         indentLevel += Math.floor(spaceCount / 2);
+      } else if (line[i] === '　') {
+        // 全角スペースは段落インデントとして扱うため、インデントレベルは加算しない
+        i++;
       }
     }
     
@@ -455,12 +490,13 @@ export class MarkdownParser {
     
     // 有序リスト（1. item）
     // 数字の後にピリオドとスペースが1つ以上必要
-    const orderedMatch = remaining.match(/^\d+\.\s+(.+)$/);
+    const orderedMatch = remaining.match(/^(\d+)\.\s+(.+)$/);
     if (orderedMatch) {
       return {
         type: 'ol',
         indentLevel: indentLevel,
-        content: orderedMatch[1]
+        content: orderedMatch[2],
+        orderNumber: parseInt(orderedMatch[1], 10)
       };
     }
     
@@ -488,18 +524,20 @@ export class MarkdownParser {
    * @returns 閉じられたリストのレベル配列
    */
   private adjustListStack(
-    result: string[], 
-    listStack: Array<{type: 'ul' | 'ol', level: number}>,
+    listStack: Array<{type: 'ul' | 'ol', level: number, counter?: number, explicitNumbering?: boolean}>,
     currentType: 'ul' | 'ol',
     currentLevel: number
-  ): number[] {
+  ): { closedLevels: number[], closingTagsDeep: string[], closingTagsSameLevel: string[], openingTags: string[] } {
     const closedLevels: number[] = [];
+    const closingTagsDeep: string[] = [];
+    const closingTagsSameLevel: string[] = [];
+    const openingTags: string[] = [];
     
     // 現在のレベルより深いスタックを削除（同じレベルは閉じない）
     while (listStack.length > 0 && listStack[listStack.length - 1].level > currentLevel) {
       const closing = listStack.pop()!;
       closedLevels.push(closing.level);
-      result.push(`</${closing.type}>`);
+      closingTagsDeep.push(`</${closing.type}>`);
     }
 
     // 同じレベルで異なるタイプの場合、閉じて新しく開始
@@ -508,32 +546,46 @@ export class MarkdownParser {
         listStack[listStack.length - 1].type !== currentType) {
       // 同じレベルで異なるタイプのリストの場合、前のリストを閉じて新しいリストを開始
       const closing = listStack.pop()!;
-      closedLevels.push(closing.level);
-      result.push(`</${closing.type}>`);
-      result.push(`<${currentType}>`);
-      listStack.push({type: currentType, level: currentLevel});
-      return closedLevels;
+      closingTagsSameLevel.push(`</${closing.type}>`);
+      openingTags.push(`<${currentType}>`);
+      listStack.push({
+        type: currentType,
+        level: currentLevel,
+        counter: currentType === 'ol' ? 0 : undefined,
+        explicitNumbering: currentType === 'ol' ? false : undefined
+      });
+      return { closedLevels, closingTagsDeep, closingTagsSameLevel, openingTags };
     }
 
     // 同じレベルの同じタイプの場合は何もしない（既に開始タグがある）
     if (listStack.length > 0 && 
         listStack[listStack.length - 1].level === currentLevel &&
         listStack[listStack.length - 1].type === currentType) {
-      return closedLevels;
+      return { closedLevels, closingTagsDeep, closingTagsSameLevel, openingTags };
     }
 
     // 新しいレベルのリストを開始（スタックが空、または最後のスタックのレベルより深い場合）
     if (listStack.length === 0) {
       // スタックが空の場合、必ず開始タグを追加
-      result.push(`<${currentType}>`);
-      listStack.push({type: currentType, level: currentLevel});
+      openingTags.push(`<${currentType}>`);
+      listStack.push({
+        type: currentType,
+        level: currentLevel,
+        counter: currentType === 'ol' ? 0 : undefined,
+        explicitNumbering: currentType === 'ol' ? false : undefined
+      });
     } else if (listStack[listStack.length - 1].level < currentLevel) {
       // より深いレベルに進む場合
-      result.push(`<${currentType}>`);
-      listStack.push({type: currentType, level: currentLevel});
+      openingTags.push(`<${currentType}>`);
+      listStack.push({
+        type: currentType,
+        level: currentLevel,
+        counter: currentType === 'ol' ? 0 : undefined,
+        explicitNumbering: currentType === 'ol' ? false : undefined
+      });
     }
     
-    return closedLevels;
+    return { closedLevels, closingTagsDeep, closingTagsSameLevel, openingTags };
   }
 
   /**
@@ -541,7 +593,7 @@ export class MarkdownParser {
    */
   private closeAllLists(
     result: string[], 
-    listStack: Array<{type: 'ul' | 'ol', level: number}>
+    listStack: Array<{type: 'ul' | 'ol', level: number, counter?: number, explicitNumbering?: boolean}>
   ): void {
     while (listStack.length > 0) {
       const closing = listStack.pop()!;
